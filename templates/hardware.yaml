@@ -1,0 +1,116 @@
+# hardware.yaml
+# 结构化硬件信息 —— 替代自然语言描述，AI 读取更精准
+# 放在项目根目录，与 CLAUDE.md 配合使用
+
+project:
+  name: "rn8209_meter"
+  version: "1.0.0"
+  description: "RN8209 双通道电能计量"
+
+mcu:
+  model: "STM32F103C8T6"
+  core: "Cortex-M3"
+  max_freq_mhz: 72
+  flash_kb: 64
+  ram_kb: 20
+  has_fpu: false
+  startup_file: "startup_stm32f10x_md.s"
+
+clock:
+  hse_mhz: 8
+  sysclk_mhz: 72
+  hclk_mhz: 72
+  pclk1_mhz: 36
+  pclk2_mhz: 72
+
+peripherals:
+  spi1:
+    sck: {pin: "PA5", mode: "AF_PP"}
+    miso: {pin: "PA6", mode: "IN_FLOATING"}
+    mosi: {pin: "PA7", mode: "AF_PP"}
+    cs: {pin: "PA4", mode: "OUT_PP", type: "software"}
+    device: "RN8209"
+    mode: 0  # CPOL=0, CPHA=0
+    baudrate_prescaler: "SPI_BaudRatePrescaler_256"
+    notes: "软件片选，上电延时 200ms 后再初始化"
+
+  usart1:
+    tx: {pin: "PA9", mode: "AF_PP"}
+    rx: {pin: "PA10", mode: "IN_FLOATING"}
+    baudrate: 115200
+    databits: 8
+    stopbits: 1
+    parity: "NONE"
+    mode: "polling"
+
+  adc1:
+    in0: {pin: "PA0", mode: "AIN", purpose: "voltage_sample"}
+    in1: {pin: "PA1", mode: "AIN", purpose: "current_sample"}
+    resolution: 12
+    alignment: "RIGHT"
+    trigger: "SOFTWARE"
+
+  gpio:
+    rn8209_irq:
+      pin: "PB0"
+      mode: "IN_FLOATING"
+      trigger: "EXTI_Rising"
+      purpose: "电能脉冲中断"
+
+sensors:
+  rn8209:
+    type: "energy_meter"
+    interface: "SPI1"
+    vref_v: 3.3
+    current:
+      shunt_ohm: 0.01
+      full_scale_a: 10.0
+      pga: 16
+    voltage:
+      divider_ratio: 1000
+      full_scale_v: 330.0
+    communication:
+      protocol: "SPI"
+      mode: 0
+      msb_first: true
+      data_bits: 8
+    calibration:
+      zero_point_ch1: null  # 待校准
+      zero_point_ch2: null  # 待校准
+      gain_ch1: null
+      gain_ch2: null
+
+constraints:
+  - id: "C001"
+    description: "RN8209 上电后需延时 200ms 再初始化 SPI"
+    severity: "critical"
+    related: ["spi1"]
+
+  - id: "C002"
+    description: "双通道并联时，通道 2 零点值需单独校准"
+    severity: "warning"
+    related: ["rn8209"]
+
+  - id: "C003"
+    description: "严禁在中断中使用浮点运算（F103 无 FPU）"
+    severity: "critical"
+    related: ["mcu"]
+
+  - id: "C004"
+    description: "PA9/PA10 被 USART1 占用，不可用于其他复用功能"
+    severity: "info"
+    related: ["usart1"]
+
+pin_checklist:
+  - {pin: "PA0", function: "ADC1_IN0", status: "used"}
+  - {pin: "PA1", function: "ADC1_IN1", status: "used"}
+  - {pin: "PA4", function: "RN8209_CS", status: "used"}
+  - {pin: "PA5", function: "SPI1_SCK", status: "used"}
+  - {pin: "PA6", function: "SPI1_MISO", status: "used"}
+  - {pin: "PA7", function: "SPI1_MOSI", status: "used"}
+  - {pin: "PA9", function: "USART1_TX", status: "used"}
+  - {pin: "PA10", function: "USART1_RX", status: "used"}
+  - {pin: "PB0", function: "RN8209_IRQ", status: "used"}
+  - {pin: "PA2", function: null, status: "available"}
+  - {pin: "PA3", function: null, status: "available"}
+  - {pin: "PB1", function: null, status: "available"}

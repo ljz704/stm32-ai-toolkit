@@ -1,0 +1,55 @@
+{
+  "name": "rn8209_meter",
+  "version": "1.0.0",
+  "description": "RN8209 双通道电能计量",
+  "mcu": "STM32F103C8T6",
+  "template": "f1xx_general",
+
+  "active_skills": [
+    "build_flash_debug",
+    "code_review",
+    "debug_analyze",
+    "peripheral_config"
+  ],
+
+  "mcp_tools": [
+    "keil_build",
+    "keil_clean",
+    "stlink_flash",
+    "stlink_erase",
+    "probe_info",
+    "serial_list_ports",
+    "serial_send",
+    "serial_read",
+    "serial_monitor_start",
+    "serial_monitor_read",
+    "serial_monitor_stop",
+    "parse_build_log",
+    "find_build_output"
+  ],
+
+  "memory_files": [
+    ".claude/memory/architecture.md",
+    ".claude/memory/pin_usage.md",
+    ".claude/memory/known_issues.md",
+    ".claude/memory/session_log.md"
+  ],
+
+  "hardware_file": "hardware.yaml",
+
+  "constraints": {
+    "max_flash_kb": 64,
+    "max_ram_kb": 20,
+    "no_malloc": true,
+    "no_float_in_isr": true,
+    "stack_size_bytes": 4096
+  },
+
+  "coding_standard": {
+    "function_naming": "ModuleName_ActionName",
+    "global_prefix": "g_",
+    "macro_style": "ALL_CAPS",
+    "local_style": "camelCase",
+    "comment_style": "doxygen"
+  }
+}
