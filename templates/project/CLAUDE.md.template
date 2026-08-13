@@ -1,0 +1,39 @@
+# {{PROJECT_NAME}} —— STM32 工程
+
+> 本文件是 Claude Code 自动加载的项目级入口（放在项目根目录）。
+> 使用 `@` 语法导入记忆文件；完整开发规范见全局 CLAUDE.md。
+
+## 项目信息
+- 项目名称：{{PROJECT_NAME}}
+- MCU 型号：{{MCU_MODEL}}
+- 核心功能：（待补充）
+
+## 记忆文件（自动导入，勿删）
+@.claude/memory/architecture.md
+@.claude/memory/pin_usage.md
+@.claude/memory/known_issues.md
+@.claude/memory/session_log.md
+
+## 硬件概述
+> 生成外设代码前，先读取 `hardware.yaml`（引脚/外设/约束的权威来源）。
+
+- MCU：{{MCU_MODEL}}
+- 时钟：HSE 8MHz → PLL → SYSCLK 72MHz
+- 调试接口：SWD（PA13/PA14）
+- 关键外设：（待补充，登记到 hardware.yaml）
+
+## 编译 / 烧录
+```bash
+# Keil 命令行编译（Release 模式）
+"{{KEIL_UV4}}" -b MDK-ARM/{{MDK_PROJECT}}.uvprojx -o BuildLog.txt -j0
+```
+> 对 Claude 说 `/build`（或 `keil_build`）即可自动编译并解析日志。
+
+## 铁律（违反即返工）
+1. **每改 ≥ 5 行代码必须编译验证**（`keil_build` / `/build`），0 Error 后才能继续。
+2. **生成外设代码前必须查 `pin_usage.md`**，禁止占用已分配引脚。
+3. **写 ADC / HRTIM / SPI 代码前必须查 `known_issues.md`**。
+4. **串口数据必须先展示原始数据**（text 代码块），再给分析。
+5. 编码规范（命名 / Doxygen 注释 / 禁 malloc / ISR 禁浮点）见全局 CLAUDE.md。
+
+详见全局 CLAUDE.md

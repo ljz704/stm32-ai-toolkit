@@ -2,27 +2,48 @@
 
 ## 这是什么？
 
-这是你的 **STM32 + Claude Code 开发环境完整配置包**。换电脑时，把这个文件夹复制过去，**双击 `install.py`**，5 分钟后全部恢复。
+这是你的 **STM32 + Claude Code 开发环境完整配置包**。换电脑时，把这个文件夹复制过去，**双击 `install.py`**，几分钟后全部恢复。
+
+包含四层配置：
+
+- **Skills** —— Claude 的开发技能（编译烧录、调试分析、代码审查、外设配置）
+- **Commands** —— 常用斜杠命令（`/build`、`/flash`、`/serial`、`/review`、`/newproject` 等）
+- **MCP Server** —— 让 Claude 能直接调用 Keil 编译、STM32CubeProgrammer 烧录、串口收发
+- **Hooks + 模板** —— 强制编译验证、记忆自动注入、新工程脚手架
 
 ## 目录结构
 
 ```
 stm32-ai-toolkit/
-├── install.py                    ← 双击运行，一键恢复
+├── install.py                    ← 双击运行，一键安装/恢复
+├── uninstall.py                  ← 一键卸载（默认移到备份，--purge 彻底清理）
+├── backup.py                     ← 把 ~/.claude 的配置同步回本包（备份）
+├── new_project.py                ← 新工程脚手架（可用 /newproject 调用）
 ├── README.md                     ← 本文件
-├── global_claude.md              ← 你的全局开发规范
+├── global_claude.md              ← 你的全局开发规范（装到 ~/.claude/CLAUDE.md）
+├── _cmdutil.py                   ← 脚本共用模块（编码/子进程封装）
 ├── install_summary.json          ← 安装摘要（安装后自动生成）
-├── templates/                    ← 项目模板
-│   ├── f1xx_general.md
-│   └── f3xx_digital_power.md
-├── skills/                       ← Claude Skills
-│   ├── build_flash_debug.md
-│   ├── code_review.md
-│   ├── debug_analyze.md
-│   └── peripheral_config.md
-└── mcp/                          ← MCP Server
-    ├── stm32_mcp_server.py
-    └── register_mcp.py
+├── skills/                       ← Claude Skills（每个含 SKILL.md）
+│   ├── stm32-build-flash-debug/
+│   ├── stm32-code-review/
+│   ├── stm32-debug-analyze/
+│   └── stm32-peripheral-config/
+├── commands/                     ← 斜杠命令（装到 ~/.claude/commands/）
+│   ├── build.md  flash.md  serial.md
+│   ├── review.md  newissue.md  newproject.md
+├── templates/
+│   └── project/                  ← new_project.py 的工程骨架模板
+│       ├── CLAUDE.md.template
+│       ├── settings.json.template（hooks 配置）
+│       ├── hardware.yaml.blank
+│       ├── memory/               ← architecture / pin_usage / known_issues / session_log
+│       ├── src/  inc/  MDK-ARM/
+├── mcp/
+│   ├── stm32_mcp_server.py       ← MCP Server（14 个工具）
+│   └── register_mcp.py
+└── scripts/
+    ├── serial_live.py            ← 独立串口实时监控
+    └── hooks/                    ← 编译闸门 / 记忆注入 / 会话日志等
 ```
 
 ## 换电脑恢复步骤
@@ -36,7 +57,7 @@ stm32-ai-toolkit/
    - STM32CubeProgrammer（ST 官网免费下载）
    - Claude Code CLI（`npm install -g @anthropic-ai/claude-code`）
 3. **双击 `install.py`**
-4. 等待完成，按提示验证
+4. 等待完成，按下方清单验证
 
 ### 方式二：让 AI 帮你恢复
 
@@ -48,7 +69,7 @@ AI 会自动：
 1. 读取本 README 了解结构
 2. 运行 `install.py`
 3. 验证 `claude mcp list` 输出
-4. 测试编译一个示例工程
+4. 用 `new_project.py` 生成一个测试工程并编译验证通路
 
 ### 方式三：Git 同步（高级）
 
@@ -72,36 +93,36 @@ python install.py
 
 ## 安装后验证清单
 
-运行 `install.py` 后，依次验证：
-
 ```bash
-# 1. 检查全局规范
+# 1. 全局规范
 ls %USERPROFILE%\.claude\CLAUDE.md
 
-# 2. 检查模板
-ls %USERPROFILE%\.claude\templates\
-
-# 3. 检查 Skills
+# 2. Skills（4 个真 skill，含 SKILL.md）
 ls %USERPROFILE%\.claude\skills\
+#   应看到 stm32-build-flash-debug / stm32-code-review / stm32-debug-analyze / stm32-peripheral-config
 
-# 4. 检查 MCP Server
+# 3. Commands（6 个斜杠命令）
+ls %USERPROFILE%\.claude\commands\
+#   应看到 build.md flash.md serial.md review.md newissue.md newproject.md
+
+# 4. MCP Server
 claude mcp list
-# 应该看到: stm32-toolkit: stdio — Connected
+#   应看到: stm32-toolkit: stdio — Connected
 
 # 5. 启动对话测试
 claude
-# 说: "编译当前工程"
+#   说: "编译当前工程"  （若在带 hooks 的工程里，AI 会自动调用 keil_build）
 ```
 
 ## 日常更新
 
-当你修改了规范或增加了新 Skill，记得同步回这个文件夹：
+当你修改了规范、Skill 或命令，记得同步回这个文件夹：
 
 ```bash
-# 从系统目录同步回工具包（更新备份）
-copy %USERPROFILE%\.claude\CLAUDE.md global_claude.md
-copy %USERPROFILE%\.claude\templates\* templates\
-copy %USERPROFILE%\.claude\skills\* skills\
+# 从 ~/.claude 同步回工具包（更新备份），先预览
+python backup.py --dry-run
+# 确认无误后执行（默认方向：~/.claude → 本包）
+python backup.py
 ```
 
 然后提交到 Git 或复制到网盘。
@@ -117,5 +138,21 @@ A: 在环境变量中添加 `KEIL_PATH=D:\Keil_v5\UV4\UV4.exe`，然后重新运
 **Q: MCP 注册失败？**
 A: 确认 `claude` 命令可用（在 CMD 中输入 `claude --version`）。如果不行，先安装 Node.js 和 Claude Code CLI。
 
+**Q: 依赖装不上（镜像源没有 fastmcp）？**
+A: install.py 会先用你配置的 pip 镜像，失败后自动回退官方 PyPI（`-i https://pypi.org/simple`）。若你配置的镜像较慢，也可手动：
+   `pip install -i https://pypi.org/simple fastmcp pyserial`
+
+**Q: 注册时报 FileNotFoundError: claude？**
+A: 这是 Windows 上 npm 的 `claude.CMD` 批处理 shim 无法被 subprocess 直接启动的已知问题，已修复（run_cmd 自动用 `cmd /c` 启动）。若仍出现，检查 claude 是否在 PATH 里。
+
 **Q: 我只想恢复部分配置？**
-A: 用文本编辑器打开 `install.py`，注释掉不需要的步骤（如 `# install_templates()`），然后运行。
+A: 用 `python install.py --no-mcp` 跳过 MCP 注册，`--no-deps` 跳过 pip 依赖；对已有工程补装 AI 辅助层用 `python install.py --project <路径>`。
+
+**Q: 想卸载重装（验证/试验阶段）？**
+A: 一键卸载，默认把配置移到备份目录（可恢复），`--purge` 才彻底清理：
+
+```bash
+python uninstall.py            # 卸载（交互确认，配置移到 ~/.claude/.stm32-toolkit-uninstalled/<时间戳>/）
+python uninstall.py --purge    # 卸载并删除全部备份，干净重装
+python install.py              # 重新安装
+```

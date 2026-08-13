@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*UV4.exe*)",
+      "Bash(*STM32_Programmer_CLI*)",
+      "Bash(python *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Edit|Write",
+        "hooks": [ { "type": "command",
+          "command": "python \"{{TOOLKIT_PATH}}/scripts/hooks/check_build_gate.py\"" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "mcp__stm32-toolkit__keil_build",
+        "hooks": [ { "type": "command",
+          "command": "python \"{{TOOLKIT_PATH}}/scripts/hooks/record_build.py\"" } ] },
+      { "matcher": "Edit|Write",
+        "hooks": [ { "type": "command",
+          "command": "python \"{{TOOLKIT_PATH}}/scripts/hooks/remind_compile.py\"" } ] },
+      { "matcher": "mcp__stm32-toolkit__serial_*",
+        "hooks": [ { "type": "command",
+          "command": "python \"{{TOOLKIT_PATH}}/scripts/hooks/enforce_raw_data.py\"" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command",
+          "command": "python \"{{TOOLKIT_PATH}}/scripts/hooks/inject_memory_prompt.py\"" } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command",
+          "command": "python \"{{TOOLKIT_PATH}}/scripts/hooks/finalize_session_log.py\"" } ] }
+    ]
+  }
+}

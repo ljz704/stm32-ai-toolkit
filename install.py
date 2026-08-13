@@ -8,14 +8,29 @@ STM32 AI 开发工作流 —— 一键安装/恢复脚本
 
 也可以对 Claude 说："帮我恢复 STM32 开发环境"
 AI 会调用此脚本自动执行。
+
+用法:
+    python install.py                        # 完整安装（全局配置/Skills/Commands/工具链/MCP）
+    python install.py --project <已有工程>   # 只对已有工程补装 AI 辅助层（委托 new_project.py）
+    python install.py --no-mcp               # 跳过 MCP 注册
+    python install.py --no-deps              # 跳过 pip 依赖安装
+    python install.py --yes                  # 跳过所有 input 确认（双击运行时默认无交互）
 """
 
-import os
-import sys
-import shutil
-import subprocess
+import argparse
 import json
+import os
+import shutil
+import sys
+from datetime import datetime
 from pathlib import Path
+
+# 让脚本从其他目录运行时也能 import _cmdutil
+SCRIPT_DIR = Path(__file__).parent.resolve()
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from _cmdutil import fix_console_encoding, run_cmd  # noqa: E402
 
 # ===================== 颜色输出 =====================
 class Colors:
@@ -31,11 +46,22 @@ def err(msg):   print(f"{Colors.RED}❌ {msg}{Colors.RESET}")
 def info(msg):  print(f"{Colors.CYAN}ℹ️  {msg}{Colors.RESET}")
 
 # ===================== 路径常量 =====================
-SCRIPT_DIR = Path(__file__).parent.resolve()
 USER_HOME = Path.home()
 CLAUDE_DIR = USER_HOME / ".claude"
-TEMPLATES_DIR = CLAUDE_DIR / "templates"
 SKILLS_DIR = CLAUDE_DIR / "skills"
+COMMANDS_DIR = CLAUDE_DIR / "commands"
+MCP_SERVER = SCRIPT_DIR / "mcp" / "stm32_mcp_server.py"
+MCP_SERVER_NAME = "stm32-toolkit"
+MCP_SERVER_MARKER = "serial_monitor_start"  # 校验权威版 server 已含 serial_monitor_* 工具
+
+# 本工具包安装的技能/命令清单：uninstall.py 按此精确卸载，不误删其他同目录内容
+KNOWN_SKILLS = [
+    "stm32-build-flash-debug",
+    "stm32-code-review",
+    "stm32-debug-analyze",
+    "stm32-peripheral-config",
+]
+KNOWN_COMMANDS = ["build.md", "flash.md", "serial.md", "review.md", "newissue.md", "newproject.md"]
 
 # ===================== 步骤 1: 检查 Python 环境 =====================
 def check_python():
@@ -45,6 +71,27 @@ def check_python():
         err("需要 Python 3.8+，当前版本: {}.{}.{}".format(version.major, version.minor, version.micro))
         sys.exit(1)
     ok(f"Python {version.major}.{version.minor}.{version.micro}")
+
+# ===================== 工具: 覆盖前备份已有配置 =====================
+# 备份统一移到 ~/.claude/.stm32-toolkit-backups/<时间戳>/（skills/commands 目录之外）。
+# 不能原地生成 <name>.bak_<时间戳>：技能目录会被 Claude 当技能加载，命令文件会污染目录。
+BACKUP_DIR = CLAUDE_DIR / ".stm32-toolkit-backups"
+
+def _backup_existing(path: Path):
+    """覆盖前把已有文件/目录移动到备份目录，避免破坏原配置。用 move 而非 copy+bak 后缀。"""
+    if not path.exists():
+        return None
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    bak_dir = BACKUP_DIR / stamp
+    try:
+        bak_dir.mkdir(parents=True, exist_ok=True)
+        dst = bak_dir / path.name
+        shutil.move(str(path), str(dst))
+        info(f"已备份原有 {path.name} → {dst}")
+        return dst
+    except OSError as e:
+        warn(f"备份 {path.name} 失败: {e}，继续安装")
+        return None
 
 # ===================== 步骤 2: 安装 Python 依赖 =====================
 def install_deps():
@@ -57,18 +104,35 @@ def install_deps():
         except ImportError:
             missing.append(dep)
 
-    if missing:
-        warn(f"缺少依赖: {', '.join(missing)}，正在安装...")
-        result = subprocess.run([sys.executable, "-m", "pip", "install"] + missing,
-                                capture_output=True, text=True)
-        if result.returncode != 0:
-            err(f"安装失败: {result.stderr}")
-            info("请手动运行: pip install fastmcp pyserial")
-            return False
-        ok(f"已安装: {', '.join(missing)}")
-    else:
+    if not missing:
         ok("所有 Python 依赖已就绪")
-    return True
+        return True
+
+    warn(f"缺少依赖: {', '.join(missing)}，正在安装...")
+
+    # 依次尝试：用户配置的默认源 → 阿里云（国内全量镜像）→ 官方 PyPI。
+    # 清华/USTC 等镜像可能缺 fastmcp；官方 PyPI 国内直连常超时。
+    bases = [
+        [sys.executable, "-m", "pip", "install"],  # 用户 pip 配置的默认源
+        [sys.executable, "-m", "pip", "install", "-i", "https://mirrors.aliyun.com/pypi/simple/"],
+        [sys.executable, "-m", "pip", "install", "-i", "https://pypi.org/simple"],
+    ]
+    attempts = [base + missing for base in bases]
+    labels = ["默认镜像源", "阿里云镜像", "官方 PyPI"]
+    last = None
+    for idx, pip_cmd in enumerate(attempts):
+        if idx > 0:
+            warn(f"{labels[idx-1]} 安装失败，改用{labels[idx]}...")
+        result = run_cmd(pip_cmd, timeout=300)
+        last = (result, pip_cmd)
+        if result.ok:
+            ok(f"已安装: {', '.join(missing)}")
+            return True
+
+    result, pip_cmd = last
+    err(f"安装失败: {result.error or result.combined}")
+    info(f"请手动运行: {' '.join(pip_cmd)}")
+    return False
 
 # ===================== 步骤 3: 安装全局 CLAUDE.md =====================
 def install_global_claude_md():
@@ -82,27 +146,13 @@ def install_global_claude_md():
         err(f"未找到 {src}")
         return False
 
+    _backup_existing(dst)
     shutil.copy2(src, dst)
     ok(f"全局规范已安装: {dst}")
     return True
 
-# ===================== 步骤 4: 安装模板 =====================
-def install_templates():
-    info("安装项目模板...")
-    TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
-
-    src_dir = SCRIPT_DIR / "templates"
-    if not src_dir.exists():
-        warn("templates 目录不存在，跳过")
-        return True
-
-    for f in src_dir.iterdir():
-        if f.suffix == ".md":
-            shutil.copy2(f, TEMPLATES_DIR / f.name)
-            ok(f"模板: {f.name}")
-    return True
-
-# ===================== 步骤 5: 安装 Skills =====================
+# ===================== 步骤 4: 安装 Skills =====================
+# 不再平铺拷贝 .md，改为递归安装"真 skill 目录"（含 SKILL.md 的目录整体拷贝）。
 def install_skills():
     info("安装 Skills...")
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
@@ -112,113 +162,197 @@ def install_skills():
         warn("skills 目录不存在，跳过")
         return True
 
-    for f in src_dir.iterdir():
-        if f.suffix == ".md":
-            shutil.copy2(f, SKILLS_DIR / f.name)
-            ok(f"Skill: {f.name}")
+    count = 0
+    for d in sorted(src_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        if not (d / "SKILL.md").exists():
+            continue
+        dst = SKILLS_DIR / d.name
+        _backup_existing(dst)  # 已有同名词目先移出备份，避免覆盖用户自定义 / 残留 .bak 污染
+        shutil.copytree(d, dst, dirs_exist_ok=True)
+        ok(f"Skill: {d.name}")
+        count += 1
+
+    if count == 0:
+        warn(f"{src_dir} 下没有含 SKILL.md 的技能目录")
+    return True
+
+# ===================== 步骤 5: 安装 Commands =====================
+def install_commands():
+    info("安装 Commands...")
+    COMMANDS_DIR.mkdir(parents=True, exist_ok=True)
+
+    src_dir = SCRIPT_DIR / "commands"
+    if not src_dir.exists():
+        warn("commands 目录不存在，跳过")
+        return True
+
+    count = 0
+    for f in sorted(src_dir.glob("*.md")):
+        dst = COMMANDS_DIR / f.name
+        _backup_existing(dst)  # 覆盖前备份同名旧命令
+        shutil.copy2(f, dst)
+        ok(f"Command: {f.name}")
+        count += 1
+
+    if count == 0:
+        warn(f"{src_dir} 下没有 .md 命令文件")
     return True
 
 # ===================== 步骤 6: 检查 Keil 和烧录工具 =====================
+# 优先读环境变量 KEIL_PATH / STM32_PROGRAMMER（若设了直接用），否则探测默认路径。
 def check_toolchain():
     info("检查工具链...")
 
-    # Keil
-    keil_paths = [
-        Path(r"C:\Keil_v5\UV4\UV4.exe"),
-        Path(r"D:\Keil_v5\UV4\UV4.exe"),
-        Path(r"C:\Keil\UV4\UV4.exe"),
-    ]
     keil_found = None
-    for p in keil_paths:
-        if p.exists():
-            keil_found = p
-            break
-
-    if keil_found:
-        ok(f"Keil: {keil_found}")
+    keil_env = os.environ.get("KEIL_PATH")
+    if keil_env:
+        keil_found = Path(keil_env)
+        ok(f"Keil (KEIL_PATH 环境变量): {keil_found}")
     else:
-        warn("Keil 未找到，请确认已安装 Keil MDK-ARM")
-        info("  如果安装在其他位置，请在环境变量中设置 KEIL_PATH")
+        keil_paths = [
+            Path(r"C:\Keil_v5\UV4\UV4.exe"),
+            Path(r"D:\Keil_v5\UV4\UV4.exe"),
+            Path(r"C:\Keil\UV4\UV4.exe"),
+        ]
+        for p in keil_paths:
+            if p.exists():
+                keil_found = p
+                break
+        if keil_found:
+            ok(f"Keil: {keil_found}")
+        else:
+            warn("Keil 未找到，请确认已安装 Keil MDK-ARM")
+            info("  如果安装在其他位置，请在环境变量中设置 KEIL_PATH")
 
-    # STM32CubeProgrammer
-    prog_paths = [
-        Path(r"C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe"),
-        Path(r"D:\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe"),
-    ]
     prog_found = None
-    for p in prog_paths:
-        if p.exists():
-            prog_found = p
-            break
-
-    if prog_found:
-        ok(f"STM32CubeProgrammer: {prog_found}")
+    prog_env = os.environ.get("STM32_PROGRAMMER")
+    if prog_env:
+        prog_found = Path(prog_env)
+        ok(f"STM32CubeProgrammer (STM32_PROGRAMMER 环境变量): {prog_found}")
     else:
-        warn("STM32CubeProgrammer 未找到，请从 ST 官网下载安装")
-        info("  下载地址: https://www.st.com/en/development-tools/stm32cubeprog.html")
+        prog_paths = [
+            Path(r"C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe"),
+            Path(r"D:\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe"),
+        ]
+        for p in prog_paths:
+            if p.exists():
+                prog_found = p
+                break
+        if prog_found:
+            ok(f"STM32CubeProgrammer: {prog_found}")
+        else:
+            warn("STM32CubeProgrammer 未找到，请从 ST 官网下载安装")
+            info("  下载地址: https://www.st.com/en/development-tools/stm32cubeprog.html")
 
-    return keil_found, prog_found
+    cubemx_found = None
+    cubemx_env = os.environ.get("CUBEMX_PATH")
+    if cubemx_env:
+        cubemx_found = Path(cubemx_env)
+        ok(f"STM32CubeMX (CUBEMX_PATH 环境变量): {cubemx_found}")
+    else:
+        cubemx_paths = [
+            Path(r"D:\STM32CubeMX\STM32CubeMX.exe"),
+            Path(r"C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeMX\STM32CubeMX.exe"),
+            Path(r"C:\STM32CubeMX\STM32CubeMX.exe"),
+        ]
+        for p in cubemx_paths:
+            if p.exists():
+                cubemx_found = p
+                break
+        if cubemx_found:
+            ok(f"STM32CubeMX: {cubemx_found}")
+        else:
+            warn("STM32CubeMX 未找到（cubemx_generate 代码生成工具不可用）")
+            info("  如果安装在其他位置，请在环境变量中设置 CUBEMX_PATH")
+
+    return keil_found, prog_found, cubemx_found
 
 # ===================== 步骤 7: 注册 MCP Server =====================
-def register_mcp(keil_path: Path = None, prog_path: Path = None):
+def register_mcp(keil_path=None, prog_path=None, cubemx_path=None):
     info("注册 MCP Server...")
 
     # 检查 claude 命令
     claude_cmd = shutil.which("claude")
     if not claude_cmd:
         warn("未找到 claude 命令，跳过 MCP 注册")
-        info("  请确保 Claude Code CLI 已安装并加入 PATH")
-        info("  安装后手动运行: claude mcp add --scope user --transport stdio stm32-toolkit -- python <路径>/stm32_mcp_server.py")
+        info("  请确保 Claude Code CLI 已安装并加入 PATH（npm install -g @anthropic-ai/claude-code）")
         return False
 
-    server_script = SCRIPT_DIR / "mcp" / "stm32_mcp_server.py"
-    if not server_script.exists():
-        err(f"MCP Server 脚本未找到: {server_script}")
+    if not MCP_SERVER.exists():
+        err(f"MCP Server 脚本未找到: {MCP_SERVER}")
         return False
 
-    # 先移除旧的
-    subprocess.run(["claude", "mcp", "remove", "stm32-toolkit"],
-                   capture_output=True, text=True)
+    # 校验权威版 server：必须已合并 serial_monitor_* 工具，否则版本不对
+    try:
+        server_text = MCP_SERVER.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        err(f"读取 {MCP_SERVER} 失败: {e}")
+        return False
+    if MCP_SERVER_MARKER not in server_text:
+        warn(f"{MCP_SERVER.name} 版本不对：未包含 {MCP_SERVER_MARKER} 工具，跳过注册")
+        info("  请先把 serial_monitor_* 工具合并进权威版 server，再重新运行本脚本")
+        return False
 
-    # 设置环境变量（让 MCP Server 知道工具路径）
-    env = os.environ.copy()
-    if keil_path:
-        env["KEIL_PATH"] = str(keil_path)
-    if prog_path:
-        env["STM32_PROGRAMMER"] = str(prog_path)
+    # 先移除旧注册（未注册过时返回非零属正常，仅当命令本身报错/超时才提示）
+    remove = run_cmd(["claude", "mcp", "remove", MCP_SERVER_NAME], timeout=60)
+    if remove.error:
+        warn(f"移除旧注册失败: {remove.error}（继续注册）")
+    elif remove.timed_out:
+        warn("移除旧注册超时（继续注册）")
 
-    cmd = [
+    # 关键修复：把检测到的工具路径用 -e KEY=VALUE 烤进注册配置，
+    # 让 MCP server 运行时能读到，修复原版 env=env 传不到 server 的问题。
+    add_cmd = [
         "claude", "mcp", "add",
         "--scope", "user",
         "--transport", "stdio",
-        "stm32-toolkit",
-        "--",
-        sys.executable,
-        str(server_script)
+        MCP_SERVER_NAME,
     ]
+    if keil_path:
+        add_cmd += ["-e", f"KEIL_PATH={keil_path}"]
+    if prog_path:
+        add_cmd += ["-e", f"STM32_PROGRAMMER={prog_path}"]
+    if cubemx_path:
+        add_cmd += ["-e", f"CUBEMX_PATH={cubemx_path}"]
+    add_cmd += ["--", sys.executable, str(MCP_SERVER)]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
-    if result.returncode == 0:
-        ok("MCP Server 注册成功")
-        info("  验证: claude mcp list")
-        return True
-    else:
-        err(f"注册失败: {result.stderr}")
+    result = run_cmd(add_cmd)
+    if result.error:
+        err(f"注册失败: {result.error}")
+        info(f"请手动运行: {' '.join(add_cmd)}")
+        return False
+    if result.timed_out:
+        err("注册超时（claude 命令 60s 内未返回，可能网络或登录问题）")
+        info(f"请手动运行: {' '.join(add_cmd)}")
+        return False
+    if result.returncode != 0:
+        err(f"注册失败:\n{result.combined}")
+        info(f"请手动运行: {' '.join(add_cmd)}")
         return False
 
-# ===================== 步骤 8: 生成恢复摘要 =====================
-def generate_summary(keil_path, prog_path, mcp_ok):
+    ok("MCP Server 注册成功")
+    info(f"  验证: claude mcp get {MCP_SERVER_NAME}")
+    return True
+
+# ===================== 步骤 8: 生成配置摘要 =====================
+def generate_summary(keil_path, prog_path, mcp_ok, cubemx_path=None):
     info("生成配置摘要...")
 
+    installed_skills = [d.name for d in sorted(SKILLS_DIR.iterdir()) if d.is_dir()] if SKILLS_DIR.exists() else []
+    installed_commands = [f.name for f in sorted(COMMANDS_DIR.glob("*.md"))] if COMMANDS_DIR.exists() else []
+
     summary = {
-        "install_time": str(subprocess.check_output(["cmd", "/c", "echo %date% %time%"], text=True).strip()),
+        "install_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "python": sys.executable,
         "claude_dir": str(CLAUDE_DIR),
         "keil_path": str(keil_path) if keil_path else None,
         "programmer_path": str(prog_path) if prog_path else None,
+        "cubemx_path": str(cubemx_path) if cubemx_path else None,
         "mcp_registered": mcp_ok,
-        "templates": [f.name for f in TEMPLATES_DIR.iterdir()] if TEMPLATES_DIR.exists() else [],
-        "skills": [f.name for f in SKILLS_DIR.iterdir()] if SKILLS_DIR.exists() else [],
+        "installed_skills": installed_skills,
+        "installed_commands": installed_commands,
     }
 
     summary_file = SCRIPT_DIR / "install_summary.json"
@@ -228,21 +362,77 @@ def generate_summary(keil_path, prog_path, mcp_ok):
     ok(f"配置摘要已保存: {summary_file}")
     return summary
 
+# ===================== --project 模式: 对已有工程补装 AI 辅助层 =====================
+def install_project(project_dir: Path):
+    info(f"对已有工程补装 AI 辅助层: {project_dir}")
+
+    np_script = SCRIPT_DIR / "new_project.py"
+    if not np_script.exists():
+        err(f"未找到 {np_script}，无法补装")
+        return 1
+
+    cmd = [sys.executable, str(np_script), "--dir", str(project_dir), "--existing", "--yes"]
+    result = run_cmd(cmd, timeout=300)
+    if result.error or result.timed_out:
+        err(f"补装失败: {result.error or result.combined}")
+        return 1
+    if result.returncode != 0:
+        err(f"补装失败:\n{result.combined}")
+        return 1
+
+    ok("补装完成")
+    info("  已为该工程生成 .claude 配置 / SKILL.md 等 AI 辅助文件")
+    info("  打开该工程后，让 Claude 读取工程内 .claude/CLAUDE.md 即可使用")
+    return 0
+
 # ===================== 主流程 =====================
 def main():
+    # 必须先修编码：GBK 控制台打印 emoji/中文会崩
+    fix_console_encoding()
+
+    parser = argparse.ArgumentParser(
+        prog="install.py",
+        description="STM32 AI 开发工作流 —— 一键安装/恢复。默认安装全局配置、Skills、Commands、工具链检查并注册 MCP。",
+    )
+    parser.add_argument("--project", metavar="PATH",
+                        help="不装全局配置，改为对指定已有工程补装 AI 辅助层（委托 new_project.py）")
+    parser.add_argument("--no-mcp", action="store_true", help="跳过 MCP 注册")
+    parser.add_argument("--no-deps", action="store_true", help="跳过 pip 依赖安装")
+    parser.add_argument("--yes", action="store_true",
+                        help="跳过所有 input 确认（双击运行时默认无交互，可不用本参数）")
+    args = parser.parse_args()
+
+    if args.project:
+        # --project 模式：只补装已有工程，不装全局配置、不注册 MCP
+        check_python()
+        rc = install_project(Path(args.project).resolve())
+        sys.exit(rc)
+
     print("=" * 60)
     print("  STM32 AI 开发工作流 —— 一键安装/恢复")
     print("=" * 60)
     print()
 
     check_python()
-    install_deps()
+
+    if not args.no_deps:
+        install_deps()
+    else:
+        info("已跳过依赖安装（--no-deps）")
+
     install_global_claude_md()
-    install_templates()
     install_skills()
-    keil_path, prog_path = check_toolchain()
-    mcp_ok = register_mcp(keil_path, prog_path)
-    summary = generate_summary(keil_path, prog_path, mcp_ok)
+    install_commands()
+
+    keil_path, prog_path, cubemx_path = check_toolchain()
+
+    if args.no_mcp:
+        info("已跳过 MCP 注册（--no-mcp）")
+        mcp_ok = False
+    else:
+        mcp_ok = register_mcp(keil_path, prog_path, cubemx_path)
+
+    summary = generate_summary(keil_path, prog_path, mcp_ok, cubemx_path)
 
     print()
     print("=" * 60)
@@ -254,15 +444,20 @@ def main():
         ok("全部就绪，可以开始使用 Claude Code 进行 STM32 开发了")
         print()
         print("建议测试命令:")
-        print('  1. claude mcp list          # 查看 MCP Server')
+        print(f"  1. claude mcp get {MCP_SERVER_NAME}   # 查看 MCP Server 配置")
         print('  2. claude                   # 启动对话，说"编译当前工程"')
     else:
-        warn("基础配置已完成，但 MCP Server 注册失败")
+        warn("基础配置已完成，但 MCP Server 未注册")
         print("请检查 Claude Code CLI 是否安装，然后手动注册:")
-        print(f'  claude mcp add --scope user --transport stdio stm32-toolkit -- python {SCRIPT_DIR / "mcp" / "stm32_mcp_server.py"}')
+        print(f"  claude mcp add --scope user --transport stdio {MCP_SERVER_NAME} -e KEIL_PATH=<路径> -- {sys.executable} {MCP_SERVER}")
 
     print()
-    input("按回车键退出...")
+    # --yes 或非交互（如双击/重定向）时末尾不阻塞
+    if not args.yes and sys.stdin.isatty():
+        try:
+            input("按回车键退出...")
+        except EOFError:
+            pass
 
 if __name__ == "__main__":
     main()

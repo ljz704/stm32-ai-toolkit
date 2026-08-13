@@ -57,7 +57,7 @@ CubeProgrammer CLI: C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgr
 - ADC：12bit，规则组 + 注入组，注意通道 16 是温度传感器
 
 ### STM32F334C8T6（Cortex-M4F）
-- 72MHz，64KB Flash，12KB SRAM，**带 FPU**
+- 72MHz，64KB Flash，**16KB SRAM（12KB 常规 SRAM + 4KB CCM，均带硬件奇偶校验）**，**带 FPU**
 - HRTIM：主定时器，4.608GHz 等效分辨率，死区时间独立配置
 - ADC：双注入通道，支持 HRTIM 触发，注意采样保持时间
 - 启动文件：`startup_stm32f334x8.s`

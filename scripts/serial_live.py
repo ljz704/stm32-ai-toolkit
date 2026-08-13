@@ -23,6 +23,13 @@ import serial.tools.list_ports
 from datetime import datetime
 import argparse
 
+# 修复 GBK 控制台打印 emoji/中文崩溃
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (ValueError, OSError):
+    pass
+
 def list_ports():
     print("=" * 50)
     print("  可用串口列表")
@@ -49,7 +56,7 @@ def monitor(port: str, baudrate: int):
     print("  按 Ctrl+C 停止\n")
 
     try:
-        with serial.Serial(port, baudrate, timeout=0.1) as ser, open(log_file, "w", encoding="utf-8") as f:
+        with serial.Serial(port, baudrate, timeout=0.1, dtr=False, rts=False) as ser, open(log_file, "w", encoding="utf-8") as f:
             line_buffer = ""
             line_count = 0
 
@@ -71,13 +78,6 @@ def monitor(port: str, baudrate: int):
                             # 每 100 行提示一次
                             if line_count % 100 == 0:
                                 print(f"  ... 已记录 {line_count} 行 (Ctrl+C 停止)")
-
-            # 剩余数据
-            if line_buffer.strip():
-                ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                output = f"[{ts}] {line_buffer.strip()}"
-                print(output)
-                f.write(output + "\n")
 
     except KeyboardInterrupt:
         print(f"\n\n{'=' * 50}")

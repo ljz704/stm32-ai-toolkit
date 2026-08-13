@@ -1,0 +1,83 @@
+# hardware.yaml —— 结构化硬件信息模板
+# 放在项目根目录，与 CLAUDE.md 配合使用。AI 读取本文件获取引脚/外设/约束。
+# 结构参考：工具包 templates/hardware.yaml（含完整示例）。
+# 用 # 注释掉的行是示例，按实际工程填写。
+
+project:
+  name: "{{PROJECT_NAME}}"
+  version: "0.1.0"
+  description: "{{PROJECT_NAME}} —— 项目描述（待补充）"
+
+mcu:
+  model: "{{MCU_MODEL}}"
+  core: "Cortex-M3"              # F1xx: Cortex-M3；F3xx: Cortex-M4F
+  max_freq_mhz: 72
+  flash_kb: 64                   # 按具体型号填写（C8=64KB）
+  ram_kb: 20                     # F103C8=20KB；F334C8=16KB（12KB 常规 + 4KB CCM）
+  has_fpu: false                 # F3xx 为 true
+  startup_file: "startup_stm32f10x_md.s"   # F3xx: startup_stm32f334x8.s
+
+clock:
+  hse_mhz: 8
+  sysclk_mhz: 72
+  hclk_mhz: 72
+  pclk1_mhz: 36                  # F1xx; F3xx 常为 36
+  pclk2_mhz: 72
+
+# ==================== 外设表（留空，逐项填写） ====================
+peripherals:
+  # 例：SPI1 接计量芯片
+  # spi1:
+  #   sck: {pin: "PA5", mode: "AF_PP"}
+  #   miso: {pin: "PA6", mode: "IN_FLOATING"}
+  #   mosi: {pin: "PA7", mode: "AF_PP"}
+  #   cs: {pin: "PA4", mode: "OUT_PP", type: "software"}
+  #   device: "RN8209"
+  #   mode: 0                    # CPOL=0, CPHA=0
+  #   notes: "软件片选，上电延时后再初始化"
+
+  # 例：USART1 调试串口
+  # usart1:
+  #   tx: {pin: "PA9", mode: "AF_PP"}
+  #   rx: {pin: "PA10", mode: "IN_FLOATING"}
+  #   baudrate: 115200
+  #   databits: 8
+  #   stopbits: 1
+  #   parity: "NONE"
+  #   mode: "polling"
+
+  # 例：ADC
+  # adc1:
+  #   in0: {pin: "PA0", mode: "AIN", purpose: "voltage_sample"}
+  #   in1: {pin: "PA1", mode: "AIN", purpose: "current_sample"}
+  #   resolution: 12
+  #   alignment: "RIGHT"
+  #   trigger: "SOFTWARE"        # F3xx 数字电源常用 HRTIM 触发注入通道
+
+  gpio:
+    # 例：外部中断引脚
+    # irq_pin:
+    #   pin: "PB0"
+    #   mode: "IN_FLOATING"
+    #   trigger: "EXTI_Rising"
+    #   purpose: "脉冲计数中断"
+
+sensors:
+  # 例：传感器 / 计量芯片
+  # <sensor_name>:
+  #   type: "energy_meter"
+  #   interface: "SPI1"
+  #   notes: ""
+
+# ==================== 硬件约束（影响代码生成的规则） ====================
+constraints:
+  # 例：
+  # - id: "C001"
+  #   description: "外设初始化前必须延时 xxx ms"
+  #   severity: "critical"
+
+# ==================== 引脚登记表（所有已用/可用引脚都登记） ====================
+pin_checklist:
+  # 例：
+  # - {pin: "PA0", function: "ADC1_IN0", status: "used"}
+  # - {pin: "PA2", function: null, status: "available"}

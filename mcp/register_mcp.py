@@ -1,19 +1,82 @@
+# -*- coding: utf-8 -*-
 """
 STM32 MCP Server 一键注册脚本
 自动检测环境并注册到 Claude Code。
 
 使用方法:
-    python register_mcp.py
+    python mcp/register_mcp.py
 """
 
 import os
 import sys
-import subprocess
 import shutil
+from pathlib import Path
+
+# 让根目录 _cmdutil.py 可导入
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _cmdutil import fix_console_encoding, run_cmd
+
+fix_console_encoding()
+
+# ===================== 默认工具路径（可用环境变量覆盖） =====================
+def _resolve_keil() -> str:
+    """Keil 探测：环境变量 → 常见默认路径。"""
+    env = os.environ.get("KEIL_PATH")
+    if env:
+        return env
+    for p in (
+        r"C:\Keil_v5\UV4\UV4.exe",
+        r"D:\Keil_v5\UV4\UV4.exe",
+        r"C:\Keil\UV4\UV4.exe",
+    ):
+        if os.path.exists(p):
+            return p
+    return os.environ.get("KEIL_PATH", r"C:\Keil_v5\UV4\UV4.exe")
+
+
+DEFAULT_KEIL = _resolve_keil()
+
+
+def _resolve_prog() -> str:
+    """STM32CubeProgrammer 探测：环境变量 → 常见默认路径（C:/D: 盘都试）。"""
+    env = os.environ.get("STM32_PROGRAMMER")
+    if env:
+        return env
+    for p in (
+        r"C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe",
+        r"D:\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe",
+    ):
+        if os.path.exists(p):
+            return p
+    return os.environ.get("STM32_PROGRAMMER",
+        r"C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe")
+
+
+DEFAULT_PROG = _resolve_prog()
+
+
+def _resolve_cubemx() -> str:
+    """STM32CubeMX 探测：环境变量 → 常见默认路径。"""
+    env = os.environ.get("CUBEMX_PATH")
+    if env:
+        return env
+    for p in (
+        r"D:\STM32CubeMX\STM32CubeMX.exe",
+        r"C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeMX\STM32CubeMX.exe",
+        r"C:\STM32CubeMX\STM32CubeMX.exe",
+    ):
+        if os.path.exists(p):
+            return p
+    return os.environ.get("CUBEMX_PATH", r"D:\STM32CubeMX\STM32CubeMX.exe")
+
+
+DEFAULT_CUBEMX = _resolve_cubemx()
+
 
 def find_python() -> str:
     """找到当前 Python 解释器的绝对路径。"""
     return os.path.abspath(sys.executable)
+
 
 def find_server_script() -> str:
     """找到 stm32_mcp_server.py 的路径（假设和本脚本同目录）。"""
@@ -30,9 +93,11 @@ def find_server_script() -> str:
     print(f"文件不存在: {user_path}")
     sys.exit(1)
 
+
 def check_claude_code() -> bool:
     """检查 claude 命令是否可用。"""
     return shutil.which("claude") is not None
+
 
 def check_dependencies():
     """检查必要的 Python 包。"""
@@ -53,51 +118,63 @@ def check_dependencies():
     print("✅ Python 依赖检查通过")
     return True
 
+
 def check_tools():
-    """检查 Keil 和 STM32CubeProgrammer 是否存在。"""
-    keil = r"C:\Keil_v5\UV4\UV4.exe"
-    prog = r"C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe"
+    """检查 Keil / STM32CubeProgrammer / STM32CubeMX 是否存在。"""
+    keil = DEFAULT_KEIL
+    prog = DEFAULT_PROG
+    cubemx = DEFAULT_CUBEMX
 
     if os.path.exists(keil):
-        print(f"✅ Keil  found: {keil}")
+        print(f"✅ Keil found: {keil}")
     else:
-        print(f"⚠️  Keil 未找到于默认路径: {keil}")
-        print("   请在 stm32_mcp_server.py 中修改 KEIL_PATH，或通过环境变量 KEIL_PATH 指定")
+        print(f"⚠️  Keil 未找到: {keil}")
+        print("   请通过环境变量 KEIL_PATH 指定（安装脚本会把它写入注册配置）")
 
     if os.path.exists(prog):
-        print(f"✅ STM32CubeProgrammer found")
+        print("✅ STM32CubeProgrammer found")
     else:
-        print(f"⚠️  STM32CubeProgrammer 未找到于默认路径")
-        print("   请在 stm32_mcp_server.py 中修改 PROGRAMMER_PATH，或通过环境变量 STM32_PROGRAMMER 指定")
+        print("⚠️  STM32CubeProgrammer 未找到于默认路径")
+        print("   请通过环境变量 STM32_PROGRAMMER 指定")
 
-def register_mcp(server_path: str, python_path: str):
+    if os.path.exists(cubemx):
+        print(f"✅ STM32CubeMX found: {cubemx}")
+    else:
+        print("⚠️  STM32CubeMX 未找到于默认路径")
+        print("   请通过环境变量 CUBEMX_PATH 指定（cubemx_generate 依赖它）")
+
+    return os.path.exists(keil), os.path.exists(prog), os.path.exists(cubemx)
+
+
+def register_mcp(server_path: str, python_path: str, keil_ok: bool, prog_ok: bool,
+                 cubemx_ok: bool = False):
     """注册 MCP Server 到 Claude Code。"""
     print("\n正在注册 MCP Server 到 Claude Code...")
 
     # 先尝试删除旧的（避免重复）
-    subprocess.run(["claude", "mcp", "remove", "stm32-toolkit"], 
-                   capture_output=True, text=True)
+    run_cmd(["claude", "mcp", "remove", "stm32-toolkit"], timeout=60)
 
-    cmd = [
-        "claude", "mcp", "add",
-        "--scope", "user",
-        "--transport", "stdio",
-        "stm32-toolkit",
-        "--",
-        python_path,
-        server_path
-    ]
+    # 工具路径用 -e KEY=VALUE 写进注册配置，server 运行时才能读到
+    cmd = ["claude", "mcp", "add", "--scope", "user", "--transport", "stdio", "stm32-toolkit"]
+    if keil_ok:
+        cmd += ["-e", f"KEIL_PATH={DEFAULT_KEIL}"]
+    if prog_ok:
+        cmd += ["-e", f"STM32_PROGRAMMER={DEFAULT_PROG}"]
+    if cubemx_ok:
+        cmd += ["-e", f"CUBEMX_PATH={DEFAULT_CUBEMX}"]
+    cmd += ["--", python_path, server_path]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode == 0:
+    result = run_cmd(cmd, timeout=60)
+    if result.ok:
         print("✅ 注册成功！")
         print("\n验证命令:")
-        print("   claude mcp list")
-        print("\n你应该能看到: stm32-toolkit (stdio)")
+        print("   claude mcp get stm32-toolkit")
+        print("\n确认 command 指向的 server 路径正确")
     else:
-        print(f"❌ 注册失败: {result.stderr}")
+        print(f"❌ 注册失败: {result.stderr or result.error}")
         print("\n请手动运行:")
         print(f"   claude mcp add --scope user --transport stdio stm32-toolkit -- {python_path} {server_path}")
+
 
 def main():
     print("=" * 60)
@@ -112,7 +189,7 @@ def main():
     if not check_dependencies():
         sys.exit(1)
 
-    check_tools()
+    keil_ok, prog_ok, cubemx_ok = check_tools()
 
     python_path = find_python()
     server_path = find_server_script()
@@ -122,9 +199,10 @@ def main():
 
     confirm = input("\n确认注册? [Y/n]: ").strip().lower()
     if confirm in ("", "y", "yes"):
-        register_mcp(server_path, python_path)
+        register_mcp(server_path, python_path, keil_ok, prog_ok, cubemx_ok)
     else:
         print("已取消")
+
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+install_summary.json
+serial_log_*.txt
