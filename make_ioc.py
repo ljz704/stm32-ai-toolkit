@@ -63,6 +63,26 @@ FALLBACK_RCC = {
         "RCC.TimSysFreq_Value=64000000",
         "RCC.USBFreq_Value=64000000",
     ],
+    # F0：48MHz（HSE 8MHz/PREDIV2→4MHz × PLLMUL12），无 .ioc 示例时兜底。
+    # 字段语法照抄 CubeMX 自带 NUCLEO-F030R8 Board.ioc（同为 F0 时钟树，
+    # 比 F1 多 USART1Freq_Value；HSE 是物理引脚，不声明 VP_RCC_VS_HSE）。
+    "F0": [
+        "RCC.AHBFreq_Value=48000000",
+        "RCC.APB1Freq_Value=48000000",
+        "RCC.APB1TimFreq_Value=48000000",
+        "RCC.FCLKCortexFreq_Value=48000000",
+        "RCC.FamilyName=M",
+        "RCC.HCLKFreq_Value=48000000",
+        "RCC.IPParameters=AHBFreq_Value,APB1Freq_Value,APB1TimFreq_Value,FCLKCortexFreq_Value,FamilyName,HCLKFreq_Value,MCOFreq_Value,PLLCLKFreq_Value,PLLMCOFreq_Value,PLLMUL,SYSCLKFreq_VALUE,SYSCLKSource,TimSysFreq_Value,USART1Freq_Value",
+        "RCC.MCOFreq_Value=48000000",
+        "RCC.PLLCLKFreq_Value=48000000",
+        "RCC.PLLMCOFreq_Value=24000000",
+        "RCC.PLLMUL=RCC_PLL_MUL12",
+        "RCC.SYSCLKFreq_VALUE=48000000",
+        "RCC.SYSCLKSource=RCC_SYSCLKSOURCE_PLLCLK",
+        "RCC.TimSysFreq_Value=48000000",
+        "RCC.USART1Freq_Value=48000000",
+    ],
 }
 
 
@@ -128,8 +148,12 @@ def db_range_name(fields: dict, db_dir: Path):
             dens = set(re.findall(r"[A-Z0-9]", m.group(1)))
             if density.upper() in dens:
                 hits.append(f)
-        else:                                   # 无括号（单密度文件）
-            hits.append(f)
+        else:                                   # 无括号（单密度文件），须校验密度字母
+            # 如 STM32F030C8Tx：去掉 root+pkg 前缀后剩 "8Tx"，取密度字母集合
+            tail = stem[len(root) + len(pkg):]
+            dens = set(re.findall(r"[0-9A-Z]", tail))
+            if density.upper() in dens:
+                hits.append(f)
     if not hits:
         return None
     # 优先温度后缀 Tx 的（最常见），其次任意
