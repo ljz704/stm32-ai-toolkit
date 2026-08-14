@@ -42,7 +42,7 @@ _EXAMPLE_GLOBS = ("Projects/**/*.ioc",)
 # F1 这条是实测验证过的（TEST.ioc，8MHz HSE → 64MHz）。写新家族兜底前先跑一次
 # 生成确认语法正确，否则宁可留空让用户去 CubeMX GUI 配置。
 # 内置 RCC 兜底块（官方示例缺失时用）。字段语法来自 CubeMX 自带 Board.ioc：
-# F1=实测 TEST.ioc（8MHz HSE→64MHz）、F0=NUCLEO-F030R8、L1=NUCLEO-L152RE。
+# F1=实测 TEST.ioc（8MHz HSE→64MHz）、F0=NUCLEO-F072RB（48MHz 需显式 PLLDivider=/2）、L1=NUCLEO-L152RE。
 # F1/F0 的 PLLMUL 按 --hse-mhz 缩放；L1 走 HSI 时钟与 HSE 无关，照抄固定。
 _F1_RCC_BASE = [
     "RCC.ADCFreqValue=32000000",
@@ -71,9 +71,10 @@ _F0_RCC_BASE = [
     "RCC.FCLKCortexFreq_Value=48000000",
     "RCC.FamilyName=M",
     "RCC.HCLKFreq_Value=48000000",
-    "RCC.IPParameters=AHBFreq_Value,APB1Freq_Value,APB1TimFreq_Value,FCLKCortexFreq_Value,FamilyName,HCLKFreq_Value,MCOFreq_Value,PLLCLKFreq_Value,PLLMCOFreq_Value,PLLMUL,SYSCLKFreq_VALUE,SYSCLKSource,TimSysFreq_Value,USART1Freq_Value",
+    "RCC.IPParameters=AHBFreq_Value,APB1Freq_Value,APB1TimFreq_Value,FCLKCortexFreq_Value,FamilyName,HCLKFreq_Value,MCOFreq_Value,PLLCLKFreq_Value,PLLDivider,PLLMCOFreq_Value,PLLMUL,SYSCLKFreq_VALUE,SYSCLKSource,TimSysFreq_Value,USART1Freq_Value",
     "RCC.MCOFreq_Value=48000000",
     "RCC.PLLCLKFreq_Value=48000000",
+    "RCC.PLLDivider=RCC_PREDIV_DIV2",
     "RCC.PLLMCOFreq_Value=24000000",
     "RCC.SYSCLKFreq_VALUE=48000000",
     "RCC.SYSCLKSource=RCC_SYSCLKSOURCE_PLLCLK",
@@ -116,25 +117,30 @@ _L1_RCC_BASE = [
 def _fallback_rcc(family: str, hse_hz: int) -> list:
     """内置 RCC 兜底块（官方示例缺失时用）。
 
-    F1/F0 的 PLLMUL 按晶振缩放：F1 目标 64MHz = HSE/2×MUL、F0 目标
-    48MHz = HSE/2×MUL，均要求 PLLMUL∈[2,16]，不满足抛 ValueError
-    （提示换晶振）。L1 走 HSI 时钟与 HSE 无关，照抄官方固定值。
+    F1/F0/L1 内置模板一律走 HSI 时钟，与官方 NUCLEO 板默认工程一致
+    （F0=HSI 8MHz/2×MUL12=48MHz、F1=HSI 8MHz/2×MUL16=64MHz、L1=HSI
+    16MHz/3×MUL6=32MHz），PLL 源固定为内部 HSI，不随 --hse-mhz 缩放。
+    --hse-mhz 非默认值 8 时仅告警（外接晶振请在 CubeMX GUI 时钟树里
+    开启 HSE 并选 PLL 源），避免静默配错时钟。
     返回空列表表示该家族没有兜底模板。
     """
     hse_mhz = hse_hz // 1_000_000
     if hse_mhz <= 0:
         raise ValueError("--hse-mhz 必须是正整数")
     if family == "F1":
-        mul = 128 // hse_mhz                    # PREDIV2 下 HSE×MUL = 128（64MHz×2）
-        if not (2 <= mul <= 16) or mul * hse_mhz != 128:
-            raise ValueError(f"HSE={hse_mhz}MHz 配不出 F1 的 64MHz（需 PLLMUL∈[2,16]），请换晶振")
-        return _F1_RCC_BASE + [f"RCC.PLLMUL=RCC_PLL_MUL{mul}"]
+        if hse_mhz != 8:
+            warn(f"F1 内置模板走 HSI 时钟（HSI 8MHz/2×MUL16=64MHz），--hse-mhz {hse_mhz} 不生效；"
+                 f"外接晶振请在 CubeMX GUI 时钟树开启 HSE")
+        return _F1_RCC_BASE + ["RCC.PLLMUL=RCC_PLL_MUL16"]
     if family == "F0":
-        mul = 96 // hse_mhz                     # PREDIV2 下 HSE×MUL = 96（48MHz×2）
-        if not (2 <= mul <= 16) or mul * hse_mhz != 96:
-            raise ValueError(f"HSE={hse_mhz}MHz 配不出 F0 的 48MHz（需 PLLMUL∈[2,16]），请换晶振")
-        return _F0_RCC_BASE + [f"RCC.PLLMUL=RCC_PLL_MUL{mul}"]
+        if hse_mhz != 8:
+            warn(f"F0 内置模板走 HSI 时钟（HSI 8MHz/2×MUL12=48MHz），--hse-mhz {hse_mhz} 不生效；"
+                 f"外接晶振请在 CubeMX GUI 时钟树开启 HSE")
+        return _F0_RCC_BASE + ["RCC.PLLMUL=RCC_PLL_MUL12"]
     if family == "L1":
+        if hse_mhz != 8:
+            warn(f"L1 内置模板走 HSI 时钟（HSI 16MHz/3×MUL6=32MHz），--hse-mhz {hse_mhz} 不生效；"
+                 f"外接晶振请在 CubeMX GUI 时钟树开启 HSE")
         return list(_L1_RCC_BASE)
     return []
 
@@ -400,9 +406,8 @@ def make_ioc(model: str, project_name: str = "project", hse_hz: int = 8_000_000)
             return result
         if fb:
             rcc = list(fb)
-            hse_mhz = hse_hz // 1_000_000
-            result["rcc_source"] = f"内置模板（{fields['family']}，HSE={hse_mhz}MHz）"
-            clock_note = f"内置模板时钟（{fields['family']}，HSE={hse_mhz}MHz）"
+            result["rcc_source"] = f"内置模板（{fields['family']}，HSI 时钟，与官方板一致）"
+            clock_note = f"内置模板时钟（{fields['family']}，HSI，PLL 源固定）"
         else:
             result["error"] = (
                 f"固件包 {fw_prefix_name} 里没有 {fields['family']} 官方示例 .ioc，"
@@ -448,7 +453,7 @@ def main(argv=None) -> int:
     ap.add_argument("--json", action="store_true", help="只输出 JSON，不写文件")
     ap.add_argument("--project-name", default=None, help="工程名（默认取型号）")
     ap.add_argument("--hse-mhz", type=int, default=8, metavar="N",
-                    help="板载晶振 MHz（默认 8；仅影响 F0/F1/L1 内置 RCC 兜底）")
+                    help="板载晶振 MHz（默认 8；F1/F0/L1 内置兜底走 HSI，非 8 时告警提示）")
     args = ap.parse_args(argv)
 
     # 工程名写进 .ioc（ProjectManager.ProjectName），与输出文件名一致最稳；

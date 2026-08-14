@@ -233,8 +233,10 @@ python new_project.py --name np_g4 --mcu STM32G431CBT6 --dir <tmp> --yes --no-gi
 - [x] Keil 打开生成的 uvprojx 能编译通过：`new_project.py --name np_f103_keil --mcu STM32F103C8T6` → keil_build 0 Error / 0 Warning，Flash 2062B / RAM 1648B（Compiler V5.06 update 7）
 - [x] F0 家族：`F030C8T6` → `Mcu.Name=STM32F030C8Tx`（DB 单密度文件校验，修 C6Tx 误选）；21.1s/79 文件 + keil_build 0 Error（M0/48MHz/64K/8K 全规格无 TBD）
 - [x] 双字母家族统一解析：`mcu_knowledge --query STM32WB55CGU6` → WB/Cortex-M4F/1MB/64MHz（split_model 替换单字母正则，make_ioc 复用同函数）
-- [x] `--hse-mhz` 缩放：`--mcu STM32F103C8T6 --hse-mhz 16` → ioc `PLLMUL=RCC_PLL_MUL8`（64MHz），keil_build 0 Error；8MHz 默认仍 MUL16 无回归
+- [x] `--hse-mhz` 诚实化：F1/F0 内置兜底走 HSI 时钟（与官方 NUCLEO 板一致，PLL 源固定），不再按晶振缩放 PLLMUL；`--hse-mhz 16` 时打印 WARN 提示在 CubeMX GUI 配晶振，ioc 仍 `PLLMUL=MUL16/MUL12` 不静默配错时钟
 - [x] DONE_MARKERS 误报修复：`done=True` 但 uvprojx 未落盘 → success=False 报工具链失败（不再"生成完成"假成功）
+- [x] **F0 PREDIV 修复**：F042K6T6 曾因 DB 默认 PREDIV=/1（HSE 8MHz×MUL12=96MHz 超 F042 的 48MHz）→ CubeMX 挂死 `IP not ready: Clock`；模板显式 `RCC.PLLDivider=RCC_PREDIV_DIV2`（照抄 NUCLEO-F072RB）后 23s 生成 79 文件 + keil_build 0 Error（`RCC_PLLSOURCE_HSI`/`PREDIV_DIV2`/`MUL12`=48MHz）
+- [x] 多型号回归：`F103RCT6`（F1/256K，73 文件）+ keil_build 0 Error；`G071RBT6`（G0 首测，官方示例 RCC，80 文件）+ keil_build 0 Error（Flash 2744B）；`F407VGT6`（F4 缺包）fail-fast 提示安装 FW_F4，不启动 CubeMX
 - [ ] L1 内置 RCC 兜底：需装 FW_L1 后实测（字段照抄 NUCLEO-L152RE Board.ioc，走 HSI 与 HSE 无关）
 
 ---

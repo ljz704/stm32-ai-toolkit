@@ -495,7 +495,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--no-cubemx", action="store_true",
                     help="跳过 CubeMX 无头生成，直接建 config-only 骨架（不生成代码）")
     ap.add_argument("--hse-mhz", type=int, default=8, metavar="N",
-                    help="板载晶振 MHz（默认 8；仅影响 F0/F1/L1 内置 RCC 兜底的 PLLMUL）")
+                    help="板载晶振 MHz（默认 8；F1/F0/L1 内置兜底走 HSI，非 8 时告警提示）")
     ap.add_argument("--query-mcu", metavar="MODEL",
                     help="只打印型号解析规格，不建工程（/newproject 对话预览确认用）")
     ap.add_argument("--json", action="store_true",

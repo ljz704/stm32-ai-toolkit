@@ -30,7 +30,7 @@ ls %USERPROFILE%\.claude\commands\   # 6 个命令
 # 默认路径：任意型号 → make_ioc(型号→最小.ioc) → CubeMX 无头生成完整 HAL 工程 → 补装 AI 层
 python new_project.py --name meter --mcu STM32F103CBT6 --yes
 python new_project.py --name meter --mcu STM32G431CBT6 --yes      # 非 SPL 家族同样一条命令
-python new_project.py --name meter --mcu STM32F030C8T6 --hse-mhz 16 --yes   # 板载晶振非 8MHz 时指定
+python new_project.py --name meter --mcu STM32F030C8T6 --hse-mhz 16 --yes   # 板载晶振非 8MHz 时指定（仅对有官方示例的家族生效）
 # SPL 旧路径（仅 F0/F1/F2/F3/F4/L1 有模板）：
 python new_project.py --name meter --mcu STM32F103CBT6 --template f1xx_general --yes
 # 只建 config-only 骨架（不生成代码，只装 AI 层）：
@@ -42,7 +42,7 @@ python new_project.py --query-mcu STM32G431CBT6 --json
 ```
 
 **CubeMX 优先（默认）**：不传 `--template` 时，任何型号都自动执行——
-1. `make_ioc.py`：型号 → 最小 `.ioc`（RCC 时钟块取自已装固件包的官方示例，老家族 F0/F1/L1 用内置模板；`--hse-mhz` 指定板载晶振，默认 8MHz，仅影响内置模板的 PLLMUL）；
+1. `make_ioc.py`：型号 → 最小 `.ioc`（RCC 时钟块取自已装固件包的官方示例，老家族 F0/F1/L1 用内置模板；`--hse-mhz` 指定板载晶振，默认 8MHz——仅对有官方示例的家族生效，F1/F0/L1 内置模板走 HSI 时钟、`--hse-mhz` 非 8 时告警提示在 CubeMX GUI 配晶振）；
 2. `cubemx_gen.py` 无头生成完整 HAL 工程（`Core/` `Drivers/` `MDK-ARM/<名>.uvprojx`），直接落进目标目录；
 3. 自动补装 AI 辅助层（CLAUDE.md / hardware.yaml / .claude/）。
 
@@ -68,7 +68,7 @@ python mcu_knowledge.py --list-families              # 家族核心/FPU/SPL 支�
 
 ```bash
 python make_ioc.py STM32G431CBT6 -o g4.ioc           # 型号 → 最小 .ioc（不启动 CubeMX）
-python make_ioc.py STM32F103C8T6 -o f1.ioc --hse-mhz 16   # 晶振 16MHz（内置模板按 PLLMUL 缩放）
+python make_ioc.py STM32F103C8T6 -o f1.ioc --hse-mhz 16   # F1 走 HSI，非 8MHz 时告警（内置模板不缩放 PLLMUL）
 python cubemx_gen.py g4.ioc                          # .ioc → 无头生成 HAL 工程
 python cubemx_gen.py --ensure-fw g4.ioc              # 缺固件包时检查/提示安装
 ```
