@@ -440,11 +440,19 @@ def generate(ioc_path: Path, out_dir: Path, timeout: float, in_place: bool) -> d
             return result
 
         uvprojx = working / "MDK-ARM" / f"{mdk_name}.uvprojx"
-        if seen_uvprojx:
-            result["uvprojx"] = str(uvprojx)
-            ok(f"生成完成，耗时 {result['elapsed_s']}s，工程: {uvprojx}")
-        else:
-            ok(f"生成完成，耗时 {result['elapsed_s']}s（未找到 .uvprojx，请人工核对输出目录）")
+        if not seen_uvprojx:
+            # DONE_MARKERS 会在工具链失败时误报（"Time for Generating toolchain
+            # IDE Files" 即使 toolchain 出错也出现）。uvprojx 没落盘即判失败，
+            # 避免把坏工程当成功（本次回归修复项）。
+            result["error"] = (
+                f"CubeMX 报告生成完成但未找到 MDK-ARM/{mdk_name}.uvprojx——"
+                f"工具链生成可能失败。日志: {MX_LOG}"
+            )
+            err(result["error"])
+            return result
+
+        result["uvprojx"] = str(uvprojx)
+        ok(f"生成完成，耗时 {result['elapsed_s']}s，工程: {uvprojx}")
 
         files = list_files(working)
         result["generated_count"] = len(files)

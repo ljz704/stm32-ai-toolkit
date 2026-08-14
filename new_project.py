@@ -284,7 +284,8 @@ def generate_full_skeleton(target: Path, project_name: str, mcu_model: str,
     return created
 
 
-def run_cubemx_flow(target: Path, project_name: str, mcu_model: str) -> dict:
+def run_cubemx_flow(target: Path, project_name: str, mcu_model: str,
+                    hse_hz: int = 8_000_000) -> dict:
     """CubeMX 优先路径：make_ioc（型号→最小 .ioc）→ 无头生成完整 HAL 工程。
 
     生成直接输出到 target（HAL 的 Core/Drivers/MDK-ARM 落进目标目录，不套 cubemx_out/）。
@@ -297,7 +298,7 @@ def run_cubemx_flow(target: Path, project_name: str, mcu_model: str) -> dict:
 
     result = {"ok": False}
     info(f"第 1 步: make_ioc 生成最小 .ioc（型号 {mcu_model}）...")
-    r = make_ioc(mcu_model, project_name=project_name)
+    r = make_ioc(mcu_model, project_name=project_name, hse_hz=hse_hz)
     if not r.get("ok"):
         result["error"] = r.get("error", "make_ioc 失败")
         result["error_type"] = r.get("error_type")
@@ -493,6 +494,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                          f"F0/L1/非 SPL → config-only）")
     ap.add_argument("--no-cubemx", action="store_true",
                     help="跳过 CubeMX 无头生成，直接建 config-only 骨架（不生成代码）")
+    ap.add_argument("--hse-mhz", type=int, default=8, metavar="N",
+                    help="板载晶振 MHz（默认 8；仅影响 F0/F1/L1 内置 RCC 兜底的 PLLMUL）")
     ap.add_argument("--query-mcu", metavar="MODEL",
                     help="只打印型号解析规格，不建工程（/newproject 对话预览确认用）")
     ap.add_argument("--json", action="store_true",
@@ -604,7 +607,8 @@ def main(argv=None) -> int:
                     return 1
         target.mkdir(parents=True, exist_ok=True)
         if want_cubemx:
-            flow = run_cubemx_flow(target, project_name, mcu_model)
+            flow = run_cubemx_flow(target, project_name, mcu_model,
+                                   hse_hz=args.hse_mhz * 1_000_000)
             if flow.get("ok"):
                 cubemx_ok = True
                 # uvprojx 名 = ioc 名 = 项目名，但以实际产物为准（hooks 编译命令指向它）

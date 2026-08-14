@@ -32,8 +32,8 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from cubemx_gen import (                       # noqa: E402
     detect_cubemx, find_repository, find_fw_package, fw_prefix,
-    _FW_FAMILIES_SORTED,
 )
+from mcu_knowledge import split_model
 
 # CubeMX 生成的固件包里官方示例工程搜索深度
 _EXAMPLE_GLOBS = ("Projects/**/*.ioc",)
@@ -41,49 +41,102 @@ _EXAMPLE_GLOBS = ("Projects/**/*.ioc",)
 # 官方示例里没有 .ioc 的家族（老家族 F0/F1/L1 等，示例是裸 Keil 工程）用内置 RCC 兜底。
 # F1 这条是实测验证过的（TEST.ioc，8MHz HSE → 64MHz）。写新家族兜底前先跑一次
 # 生成确认语法正确，否则宁可留空让用户去 CubeMX GUI 配置。
-FALLBACK_RCC = {
-    "F1": [
-        "RCC.ADCFreqValue=32000000",
-        "RCC.AHBFreq_Value=64000000",
-        "RCC.APB1CLKDivider=RCC_HCLK_DIV2",
-        "RCC.APB1Freq_Value=32000000",
-        "RCC.APB1TimFreq_Value=64000000",
-        "RCC.APB2Freq_Value=64000000",
-        "RCC.APB2TimFreq_Value=64000000",
-        "RCC.FCLKCortexFreq_Value=64000000",
-        "RCC.FamilyName=M",
-        "RCC.HCLKFreq_Value=64000000",
-        "RCC.IPParameters=ADCFreqValue,AHBFreq_Value,APB1CLKDivider,APB1Freq_Value,APB1TimFreq_Value,APB2Freq_Value,APB2TimFreq_Value,FCLKCortexFreq_Value,FamilyName,HCLKFreq_Value,MCOFreq_Value,PLLCLKFreq_Value,PLLMCOFreq_Value,PLLMUL,SYSCLKFreq_VALUE,SYSCLKSource,TimSysFreq_Value,USBFreq_Value",
-        "RCC.MCOFreq_Value=64000000",
-        "RCC.PLLCLKFreq_Value=64000000",
-        "RCC.PLLMCOFreq_Value=32000000",
-        "RCC.PLLMUL=RCC_PLL_MUL16",
-        "RCC.SYSCLKFreq_VALUE=64000000",
-        "RCC.SYSCLKSource=RCC_SYSCLKSOURCE_PLLCLK",
-        "RCC.TimSysFreq_Value=64000000",
-        "RCC.USBFreq_Value=64000000",
-    ],
-    # F0：48MHz（HSE 8MHz/PREDIV2→4MHz × PLLMUL12），无 .ioc 示例时兜底。
-    # 字段语法照抄 CubeMX 自带 NUCLEO-F030R8 Board.ioc（同为 F0 时钟树，
-    # 比 F1 多 USART1Freq_Value；HSE 是物理引脚，不声明 VP_RCC_VS_HSE）。
-    "F0": [
-        "RCC.AHBFreq_Value=48000000",
-        "RCC.APB1Freq_Value=48000000",
-        "RCC.APB1TimFreq_Value=48000000",
-        "RCC.FCLKCortexFreq_Value=48000000",
-        "RCC.FamilyName=M",
-        "RCC.HCLKFreq_Value=48000000",
-        "RCC.IPParameters=AHBFreq_Value,APB1Freq_Value,APB1TimFreq_Value,FCLKCortexFreq_Value,FamilyName,HCLKFreq_Value,MCOFreq_Value,PLLCLKFreq_Value,PLLMCOFreq_Value,PLLMUL,SYSCLKFreq_VALUE,SYSCLKSource,TimSysFreq_Value,USART1Freq_Value",
-        "RCC.MCOFreq_Value=48000000",
-        "RCC.PLLCLKFreq_Value=48000000",
-        "RCC.PLLMCOFreq_Value=24000000",
-        "RCC.PLLMUL=RCC_PLL_MUL12",
-        "RCC.SYSCLKFreq_VALUE=48000000",
-        "RCC.SYSCLKSource=RCC_SYSCLKSOURCE_PLLCLK",
-        "RCC.TimSysFreq_Value=48000000",
-        "RCC.USART1Freq_Value=48000000",
-    ],
-}
+# 内置 RCC 兜底块（官方示例缺失时用）。字段语法来自 CubeMX 自带 Board.ioc：
+# F1=实测 TEST.ioc（8MHz HSE→64MHz）、F0=NUCLEO-F030R8、L1=NUCLEO-L152RE。
+# F1/F0 的 PLLMUL 按 --hse-mhz 缩放；L1 走 HSI 时钟与 HSE 无关，照抄固定。
+_F1_RCC_BASE = [
+    "RCC.ADCFreqValue=32000000",
+    "RCC.AHBFreq_Value=64000000",
+    "RCC.APB1CLKDivider=RCC_HCLK_DIV2",
+    "RCC.APB1Freq_Value=32000000",
+    "RCC.APB1TimFreq_Value=64000000",
+    "RCC.APB2Freq_Value=64000000",
+    "RCC.APB2TimFreq_Value=64000000",
+    "RCC.FCLKCortexFreq_Value=64000000",
+    "RCC.FamilyName=M",
+    "RCC.HCLKFreq_Value=64000000",
+    "RCC.IPParameters=ADCFreqValue,AHBFreq_Value,APB1CLKDivider,APB1Freq_Value,APB1TimFreq_Value,APB2Freq_Value,APB2TimFreq_Value,FCLKCortexFreq_Value,FamilyName,HCLKFreq_Value,MCOFreq_Value,PLLCLKFreq_Value,PLLMCOFreq_Value,PLLMUL,SYSCLKFreq_VALUE,SYSCLKSource,TimSysFreq_Value,USBFreq_Value",
+    "RCC.MCOFreq_Value=64000000",
+    "RCC.PLLCLKFreq_Value=64000000",
+    "RCC.PLLMCOFreq_Value=32000000",
+    "RCC.SYSCLKFreq_VALUE=64000000",
+    "RCC.SYSCLKSource=RCC_SYSCLKSOURCE_PLLCLK",
+    "RCC.TimSysFreq_Value=64000000",
+    "RCC.USBFreq_Value=64000000",
+]
+_F0_RCC_BASE = [
+    "RCC.AHBFreq_Value=48000000",
+    "RCC.APB1Freq_Value=48000000",
+    "RCC.APB1TimFreq_Value=48000000",
+    "RCC.FCLKCortexFreq_Value=48000000",
+    "RCC.FamilyName=M",
+    "RCC.HCLKFreq_Value=48000000",
+    "RCC.IPParameters=AHBFreq_Value,APB1Freq_Value,APB1TimFreq_Value,FCLKCortexFreq_Value,FamilyName,HCLKFreq_Value,MCOFreq_Value,PLLCLKFreq_Value,PLLMCOFreq_Value,PLLMUL,SYSCLKFreq_VALUE,SYSCLKSource,TimSysFreq_Value,USART1Freq_Value",
+    "RCC.MCOFreq_Value=48000000",
+    "RCC.PLLCLKFreq_Value=48000000",
+    "RCC.PLLMCOFreq_Value=24000000",
+    "RCC.SYSCLKFreq_VALUE=48000000",
+    "RCC.SYSCLKSource=RCC_SYSCLKSOURCE_PLLCLK",
+    "RCC.TimSysFreq_Value=48000000",
+    "RCC.USART1Freq_Value=48000000",
+]
+_L1_RCC_BASE = [
+    "RCC.AHBFreq_Value=32000000",
+    "RCC.APB1Freq_Value=32000000",
+    "RCC.APB1TimFreq_Value=32000000",
+    "RCC.APB2Freq_Value=32000000",
+    "RCC.APB2TimFreq_Value=32000000",
+    "RCC.FCLKCortexFreq_Value=32000000",
+    "RCC.FamilyName=M",
+    "RCC.HCLKFreq_Value=32000000",
+    "RCC.HSE_VALUE=8000000",
+    "RCC.HSI_VALUE=16000000",
+    "RCC.IPParameters=AHBFreq_Value,APB1Freq_Value,APB1TimFreq_Value,APB2Freq_Value,APB2TimFreq_Value,FCLKCortexFreq_Value,FamilyName,HCLKFreq_Value,HSE_VALUE,HSI_VALUE,LCDFreq_Value,LSE_VALUE,LSI_VALUE,MCOPinFreq_Value,MSI_VALUE,PLLCLKFreq_Value,PLLDIV,PLLMUL,PWRFreq_Value,RTCClockSelectionVirtual,RTCFreq_Value,RTCHSEDivFreq_Value,SYSCLKFreq_VALUE,SYSCLKSource,TIMFreq_Value,TimerFreq_Value,USBOutput,VCOOutputFreq_Value",
+    "RCC.LCDFreq_Value=32768",
+    "RCC.LSE_VALUE=32768",
+    "RCC.LSI_VALUE=37000",
+    "RCC.MCOPinFreq_Value=32000000",
+    "RCC.MSI_VALUE=2097000",
+    "RCC.PLLCLKFreq_Value=32000000",
+    "RCC.PLLDIV=RCC_PLL_DIV3",
+    "RCC.PLLMUL=RCC_PLL_MUL6",
+    "RCC.PWRFreq_Value=32000000",
+    "RCC.RTCClockSelectionVirtual=RCC_RTCCLKSOURCE_LSE",
+    "RCC.RTCFreq_Value=32768",
+    "RCC.RTCHSEDivFreq_Value=4000000",
+    "RCC.SYSCLKFreq_VALUE=32000000",
+    "RCC.SYSCLKSource=RCC_SYSCLKSOURCE_PLLCLK",
+    "RCC.TIMFreq_Value=32000000",
+    "RCC.TimerFreq_Value=32000000",
+    "RCC.USBOutput=48000000",
+    "RCC.VCOOutputFreq_Value=96000000",
+]
+
+
+def _fallback_rcc(family: str, hse_hz: int) -> list:
+    """内置 RCC 兜底块（官方示例缺失时用）。
+
+    F1/F0 的 PLLMUL 按晶振缩放：F1 目标 64MHz = HSE/2×MUL、F0 目标
+    48MHz = HSE/2×MUL，均要求 PLLMUL∈[2,16]，不满足抛 ValueError
+    （提示换晶振）。L1 走 HSI 时钟与 HSE 无关，照抄官方固定值。
+    返回空列表表示该家族没有兜底模板。
+    """
+    hse_mhz = hse_hz // 1_000_000
+    if hse_mhz <= 0:
+        raise ValueError("--hse-mhz 必须是正整数")
+    if family == "F1":
+        mul = 128 // hse_mhz                    # PREDIV2 下 HSE×MUL = 128（64MHz×2）
+        if not (2 <= mul <= 16) or mul * hse_mhz != 128:
+            raise ValueError(f"HSE={hse_mhz}MHz 配不出 F1 的 64MHz（需 PLLMUL∈[2,16]），请换晶振")
+        return _F1_RCC_BASE + [f"RCC.PLLMUL=RCC_PLL_MUL{mul}"]
+    if family == "F0":
+        mul = 96 // hse_mhz                     # PREDIV2 下 HSE×MUL = 96（48MHz×2）
+        if not (2 <= mul <= 16) or mul * hse_mhz != 96:
+            raise ValueError(f"HSE={hse_mhz}MHz 配不出 F0 的 48MHz（需 PLLMUL∈[2,16]），请换晶振")
+        return _F0_RCC_BASE + [f"RCC.PLLMUL=RCC_PLL_MUL{mul}"]
+    if family == "L1":
+        return list(_L1_RCC_BASE)
+    return []
 
 
 # ===================== 输出 =====================
@@ -96,33 +149,25 @@ def err(msg):   sys.stderr.write(f"[ERR]  {msg}\n")
 def mcu_fields(model: str) -> dict:
     """把完整型号拆成 .ioc 需要的字段。缺 STM32 前缀自动补。
 
-    家族用 cubemx_gen 的 FW 家族表做最长前缀匹配，兼容双字母家族
-    （WB/WL/WBA/N6 等，mcu_knowledge 的正则只认单字母家族 F/G/L/H/U/C）。
+    型号拆解统一走 mcu_knowledge.split_model（最长前缀匹配，兼容双字母
+    家族 WB/WL/WBA/N6 等），本函数只补 CubeMX 侧字段 root/user。
     型号结构：STM32 + 家族 + 数字串 + 封装字母 + 密度 + 温度 + 等级。
     root（DB 文件名前缀）如 STM32F103 / STM32WB55 / STM32G431。
     """
-    upper = (model or "").strip().upper()
-    if not upper:
+    s = split_model(model)
+    if not s:
         return {}
+    upper = (model or "").strip().upper()
     if not upper.startswith("STM32"):
         upper = "STM32" + upper
-    body = upper[5:]
-    family = next((f for f in _FW_FAMILIES_SORTED if body.startswith(f)), None)
-    if not family:
-        return {}
-    rest = body[len(family):]
-    m = re.match(r"^(\d+)([A-Z])([0-9A-Z])([A-Z])(\d)?$", rest)
-    if not m:
-        return {}
-    numeric, package, density, _temp, _grade = m.groups()
     # UserName/DeviceId：末位等级(数字)→x，如 STM32G474VET6 → STM32G474VETx
     user = upper[:-1] + "x" if upper[-1:].isdigit() else upper
     return {
         "model": upper,
-        "family": family,
-        "root": "STM32" + family + numeric,
-        "package": package,
-        "density": density,
+        "family": s["family"],
+        "root": "STM32" + s["family"] + s["numeric"],
+        "package": s["package"],
+        "density": s["density"],
         "user": user,
     }
 
@@ -280,11 +325,12 @@ def build_minimal_ioc(fields: dict, range_name: str, package_name: str,
 
 
 # ===================== CLI =====================
-def make_ioc(model: str, project_name: str = "project") -> dict:
+def make_ioc(model: str, project_name: str = "project", hse_hz: int = 8_000_000) -> dict:
     """核心入口：型号 → {ok, ioc_text?, ...}。不写文件，返回结构供 CLI/MCP 用。
 
     project_name 会写进 .ioc 的 ProjectManager.ProjectName/FileName；
     生成时 CubeMX 以 .ioc 文件名为准，但两处保持一致最稳妥。
+    hse_hz 仅影响内置 RCC 兜底（F1/F0 的 PLLMUL 按晶振缩放）。
     """
     result = {"ok": False, "model": model}
     fields = mcu_fields(model)
@@ -346,11 +392,17 @@ def make_ioc(model: str, project_name: str = "project") -> dict:
             result["example_clock"] = clock_note = _clock_summary(example)
     if not rcc:
         # 老家族（F0/F1/L1…）包内无 .ioc 示例 → 用内置兜底模板
-        fb = FALLBACK_RCC.get(fields["family"])
+        try:
+            fb = _fallback_rcc(fields["family"], hse_hz)
+        except ValueError as e:
+            result["error"] = str(e)
+            err(result["error"])
+            return result
         if fb:
             rcc = list(fb)
-            result["rcc_source"] = f"内置模板（{fields['family']}）"
-            clock_note = f"内置模板时钟（{fields['family']} 已实测配置）"
+            hse_mhz = hse_hz // 1_000_000
+            result["rcc_source"] = f"内置模板（{fields['family']}，HSE={hse_mhz}MHz）"
+            clock_note = f"内置模板时钟（{fields['family']}，HSE={hse_mhz}MHz）"
         else:
             result["error"] = (
                 f"固件包 {fw_prefix_name} 里没有 {fields['family']} 官方示例 .ioc，"
@@ -395,6 +447,8 @@ def main(argv=None) -> int:
     ap.add_argument("-o", "--out", help="输出 .ioc 路径（默认 当前目录/<型号>.ioc）")
     ap.add_argument("--json", action="store_true", help="只输出 JSON，不写文件")
     ap.add_argument("--project-name", default=None, help="工程名（默认取型号）")
+    ap.add_argument("--hse-mhz", type=int, default=8, metavar="N",
+                    help="板载晶振 MHz（默认 8；仅影响 F0/F1/L1 内置 RCC 兜底）")
     args = ap.parse_args(argv)
 
     # 工程名写进 .ioc（ProjectManager.ProjectName），与输出文件名一致最稳；
@@ -406,7 +460,7 @@ def main(argv=None) -> int:
     else:
         proj = args.project_name or args.model
 
-    r = make_ioc(args.model, proj)
+    r = make_ioc(args.model, proj, hse_hz=args.hse_mhz * 1_000_000)
     if args.json:
         # ensure_ascii：GBK 控制台安全
         out = {k: v for k, v in r.items() if k != "ioc"}

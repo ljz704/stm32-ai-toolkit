@@ -30,6 +30,7 @@ ls %USERPROFILE%\.claude\commands\   # 6 个命令
 # 默认路径：任意型号 → make_ioc(型号→最小.ioc) → CubeMX 无头生成完整 HAL 工程 → 补装 AI 层
 python new_project.py --name meter --mcu STM32F103CBT6 --yes
 python new_project.py --name meter --mcu STM32G431CBT6 --yes      # 非 SPL 家族同样一条命令
+python new_project.py --name meter --mcu STM32F030C8T6 --hse-mhz 16 --yes   # 板载晶振非 8MHz 时指定
 # SPL 旧路径（仅 F0/F1/F2/F3/F4/L1 有模板）：
 python new_project.py --name meter --mcu STM32F103CBT6 --template f1xx_general --yes
 # 只建 config-only 骨架（不生成代码，只装 AI 层）：
@@ -41,11 +42,13 @@ python new_project.py --query-mcu STM32G431CBT6 --json
 ```
 
 **CubeMX 优先（默认）**：不传 `--template` 时，任何型号都自动执行——
-1. `make_ioc.py`：型号 → 最小 `.ioc`（RCC 时钟块取自已装固件包的官方示例，老家族 F0/F1 用内置模板）；
+1. `make_ioc.py`：型号 → 最小 `.ioc`（RCC 时钟块取自已装固件包的官方示例，老家族 F0/F1/L1 用内置模板；`--hse-mhz` 指定板载晶振，默认 8MHz，仅影响内置模板的 PLLMUL）；
 2. `cubemx_gen.py` 无头生成完整 HAL 工程（`Core/` `Drivers/` `MDK-ARM/<名>.uvprojx`），直接落进目标目录；
 3. 自动补装 AI 辅助层（CLAUDE.md / hardware.yaml / .claude/）。
 
 生成约 20s~3 分钟（含 CubeMX 启动）。**缺对应家族固件包**（如 FW_G4）时会先给 config-only 骨架并提示安装，装好重跑即补全。
+
+> 型号解析支持双字母家族（WB/WL/WBA/N6/W5），如 `STM32WB55CGU6` 也能解析出核心/引脚/Flash；缺该家族固件包时照样 fail-fast 提示先装包。
 
 **型号知识库（mcu_knowledge.py）自动解析**：`--mcu` 给完整型号即可，核心/FPU/最高主频/Flash/RAM/引脚数会按型号精确填充进 `hardware.yaml` 与 `CLAUDE.md`，不再默认 C8T6。
 
@@ -65,6 +68,7 @@ python mcu_knowledge.py --list-families              # 家族核心/FPU/SPL 支�
 
 ```bash
 python make_ioc.py STM32G431CBT6 -o g4.ioc           # 型号 → 最小 .ioc（不启动 CubeMX）
+python make_ioc.py STM32F103C8T6 -o f1.ioc --hse-mhz 16   # 晶振 16MHz（内置模板按 PLLMUL 缩放）
 python cubemx_gen.py g4.ioc                          # .ioc → 无头生成 HAL 工程
 python cubemx_gen.py --ensure-fw g4.ioc              # 缺固件包时检查/提示安装
 ```

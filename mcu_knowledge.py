@@ -48,6 +48,13 @@ FAMILIES = {
     "G4": {"core": "Cortex-M4F", "fpu": True,  "spl": False},
     "H7": {"core": "Cortex-M7",  "fpu": True,  "spl": False},
     "U5": {"core": "Cortex-M33", "fpu": True,  "spl": False},
+    # 双字母家族（HAL/CubeMX 专属，无 SPL）
+    "WB":  {"core": "Cortex-M4F", "fpu": True,  "spl": False},
+    "WBA": {"core": "Cortex-M33", "fpu": True,  "spl": False},
+    "WL":  {"core": "Cortex-M4F", "fpu": True,  "spl": False},
+    "WL3": {"core": "Cortex-M33", "fpu": True,  "spl": False},
+    "N6":  {"core": "Cortex-M33", "fpu": True,  "spl": False},
+    "W5":  {"core": "Cortex-M33", "fpu": True,  "spl": False},
 }
 
 # ===================== 封装字母 → 引脚数 =====================
@@ -70,6 +77,7 @@ MAX_FREQ = {
     "F0": 48, "F1": 72, "F2": 120, "F3": 72, "F4": 168,
     "F7": 216, "L1": 32, "L4": 80, "L5": 110, "G0": 64,
     "G4": 170, "H7": 480, "U5": 160,
+    "WB": 64, "WBA": 100, "WL": 64, "N6": 800,
 }
 MAX_FREQ_OVERRIDES = {
     ("F4", "01"): 84,   # F401 系列最高 84MHz
@@ -183,8 +191,13 @@ def _startup(family: str, line: str, flash_kb):
 
 # ===================== 解析 =====================
 # 密度位可是数字(4/6/8)或字母(B/C/D/E/F/G/I)，故用 [0-9A-Z]
-MODEL_RE = re.compile(
-    r"^STM32([FGLHUC])(\d)(\d{2})([A-Z])([0-9A-Z])([A-Z])(\d?)$", re.IGNORECASE)
+# 完整家族表（含双字母）：与 cubemx_gen.FW_FAMILIES 保持一致，
+# 拆解时按长度降序最长前缀匹配（WB 优先于 W，避免误判）。
+FAMILY_KEYS = sorted([
+    "F0", "F1", "F2", "F3", "F4", "F7", "G0", "G4", "H5", "H7", "H7RS",
+    "L0", "L1", "L4", "L5", "U0", "U3", "U5", "N6", "C0", "M0",
+    "WB", "WBA", "WB0", "WL", "WL3", "W5",
+], key=len, reverse=True)
 
 
 def normalize_model(model: str) -> str:
@@ -195,6 +208,42 @@ def normalize_model(model: str) -> str:
     if not s.startswith("STM32"):
         s = "STM32" + s
     return s
+
+
+def split_model(model: str) -> dict:
+    """型号拆解（权威实现，双字母家族 WB/WL/WBA/N6 等也支持）。
+
+    家族用 FAMILY_KEYS 最长前缀匹配；型号结构：
+    STM32 + 家族 + 数字串(numeric) + 封装字母 + 密度 + 温度 + 等级。
+    返回 {family, series, line, numeric, package, density, temp, grade}；
+    拆不出返回 {}（不抛异常）。
+    parse_model 与 make_ioc.mcu_fields 共用本函数，避免两处正则漂移。
+    """
+    upper = normalize_model(model)
+    if not upper:
+        return {}
+    body = upper[5:]
+    family = next((f for f in FAMILY_KEYS if body.startswith(f)), None)
+    if not family:
+        return {}
+    rest = body[len(family):]
+    m = re.match(r"^(\d+)([A-Z])([0-9A-Z])([A-Z])(\d)?$", rest)
+    if not m:
+        return {}
+    numeric, package, density, temp, grade = m.groups()
+    # line 取数字串后两位（对齐原 MODEL_RE 的 series(1位)+line(2位)）：
+    # family 已含系列号（F1 含"1"），F103 的 rest 数字串只剩 "03" → line="03"。
+    line = numeric[-2:] if len(numeric) >= 2 else numeric
+    return {
+        "family": family,
+        "series": numeric[0],
+        "line": line,
+        "numeric": numeric,
+        "package": package,
+        "density": density,
+        "temp": temp,
+        "grade": grade or "",
+    }
 
 
 def parse_model(model: str) -> dict:
@@ -223,44 +272,43 @@ def parse_model(model: str) -> dict:
         result["missing"] = ["model"]
         return result
 
-    m = MODEL_RE.match(model)
-    if not m:
+    s = split_model(model)
+    if not s:
         result["note"] = ("无法解析：需要形如 STM32F103CBT6 的完整型号 "
-                          "（家族+系列+产品线+封装+密度+温度+等级）")
+                          "（家族+系列+封装+密度+温度+等级）")
         result["missing"] = ["family", "core", "pins", "flash_kb", "ram_kb", "startup"]
         return result
 
-    fam_letter, series, line, package, density, temp, grade = m.groups()
-    family = fam_letter.upper() + series
+    family = s["family"]
     result["family"] = family
     result["family_label"] = "STM32" + family
-    result["line"] = line
-    result["package"] = package
-    result["density"] = density
-    result["model"] = "STM32" + fam_letter.upper() + series + line + package + density + temp + (grade or "")
+    result["line"] = s["line"]
+    result["package"] = s["package"]
+    result["density"] = s["density"]
+    result["model"] = "STM32" + family + s["numeric"] + s["package"] + s["density"] + s["temp"] + s["grade"]
 
     fam = FAMILIES.get(family)
     if fam:
         result["core"] = fam["core"]
         result["fpu"] = fam["fpu"]
         result["spl"] = fam["spl"]
-        result["max_freq_mhz"] = MAX_FREQ_OVERRIDES.get((family, line)) or MAX_FREQ.get(family)
+        result["max_freq_mhz"] = MAX_FREQ_OVERRIDES.get((family, s["line"])) or MAX_FREQ.get(family)
     else:
         result["missing"].append("family")
 
-    result["pins"] = PACKAGE_OVERRIDES.get((family, package)) or PACKAGES.get(package)
+    result["pins"] = PACKAGE_OVERRIDES.get((family, s["package"])) or PACKAGES.get(s["package"])
 
-    result["flash_kb"] = DENSITY_FLASH.get(density)
+    result["flash_kb"] = DENSITY_FLASH.get(s["density"])
 
-    ram_rule = RAM_BY_LINE.get((family, line))
+    ram_rule = RAM_BY_LINE.get((family, s["line"]))
     if isinstance(ram_rule, int):
         result["ram_kb"] = ram_rule
     elif isinstance(ram_rule, dict):
-        result["ram_kb"] = ram_rule.get(density)
+        result["ram_kb"] = ram_rule.get(s["density"])
     else:
         result["ram_kb"] = None
 
-    result["startup"] = _startup(family, line, result["flash_kb"]) if fam else None
+    result["startup"] = _startup(family, s["line"], result["flash_kb"]) if fam else None
 
     # 非 SPL 家族补一句说明
     if fam and not fam["spl"]:
