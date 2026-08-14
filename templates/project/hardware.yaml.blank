@@ -10,12 +10,12 @@ project:
 
 mcu:
   model: "{{MCU_MODEL}}"
-  core: "Cortex-M3"              # F1xx: Cortex-M3；F3xx: Cortex-M4F
+  core: "{{MCU_CORE}}"           # F1xx: Cortex-M3；F3xx: Cortex-M4F（自动按模板填充）
   max_freq_mhz: 72
-  flash_kb: 64                   # 按具体型号填写（C8=64KB）
-  ram_kb: 20                     # F103C8=20KB；F334C8=16KB（12KB 常规 + 4KB CCM）
-  has_fpu: false                 # F3xx 为 true
-  startup_file: "startup_stm32f10x_md.s"   # F3xx: startup_stm32f334x8.s
+  flash_kb: {{MCU_FLASH_KB}}     # 按具体型号填写（C8=64KB）
+  ram_kb: {{MCU_RAM_KB}}         # F103C8=20KB；F334C8=16KB（12KB 常规 + 4KB CCM）
+  has_fpu: {{MCU_HAS_FPU}}       # F3xx 为 true
+  startup_file: "{{MCU_STARTUP}}"   # F3xx: startup_stm32f334x8.s
 
 clock:
   hse_mhz: 8

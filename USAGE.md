@@ -87,6 +87,19 @@ python install.py              # 重新安装
 > Python 依赖 fastmcp/pyserial 默认保留，如需一并卸载：`python uninstall.py --purge-deps`。
 > 已生成工程里的 `.claude/settings.json`（hooks 配置）指向工具包路径，卸载不会删工程；若之后删除工具包文件夹，对应工程的 hooks 需自行清理。
 
+### 工具包移动/换电脑后：自愈 hooks 路径
+
+hooks 路径是绝对路径，工具包一旦移动或换电脑 clone，已有工程的 hooks 会静默失效。用 `--repair` 一键刷新：
+
+```bash
+python install.py --repair <已有工程目录>
+# 等价：python new_project.py --dir <已有工程目录> --repair --yes
+```
+
+- 只重写 `.claude/settings.json` 里的 hooks 路径到当前工具包位置，**改动前备份旧文件**（`settings.json.bak_<时间戳>`，可回退）
+- **不碰** CLAUDE.md / memory / hardware.yaml
+- 已指向当前工具包 → 自动跳过；settings.json 未引用本工具包 hooks（自定义配置）→ 跳过，绝不覆盖
+
 ## 四、日常备份 / 同步
 
 ```bash

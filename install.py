@@ -385,6 +385,26 @@ def install_project(project_dir: Path):
     info("  打开该工程后，让 Claude 读取工程内 .claude/CLAUDE.md 即可使用")
     return 0
 
+
+def repair_project(project_dir: Path):
+    """工具包移动后，刷新已有工程 hooks 路径到当前工具包（只动 settings.json）。"""
+    info(f"刷新工程 hooks 路径: {project_dir}")
+
+    np_script = SCRIPT_DIR / "new_project.py"
+    if not np_script.exists():
+        err(f"未找到 {np_script}，无法修复")
+        return 1
+
+    cmd = [sys.executable, str(np_script), "--dir", str(project_dir), "--repair", "--yes"]
+    result = run_cmd(cmd, timeout=120)
+    if result.error or result.timed_out:
+        err(f"修复失败: {result.error or result.combined}")
+        return 1
+    if result.returncode != 0:
+        err(f"修复失败:\n{result.combined}")
+        return 1
+    return 0
+
 # ===================== 主流程 =====================
 def main():
     # 必须先修编码：GBK 控制台打印 emoji/中文会崩
@@ -396,6 +416,8 @@ def main():
     )
     parser.add_argument("--project", metavar="PATH",
                         help="不装全局配置，改为对指定已有工程补装 AI 辅助层（委托 new_project.py）")
+    parser.add_argument("--repair", metavar="PATH",
+                        help="工具包移动/换电脑后，刷新已有工程 hooks 路径到当前工具包（只动 settings.json，带备份）")
     parser.add_argument("--no-mcp", action="store_true", help="跳过 MCP 注册")
     parser.add_argument("--no-deps", action="store_true", help="跳过 pip 依赖安装")
     parser.add_argument("--yes", action="store_true",
@@ -406,6 +428,12 @@ def main():
         # --project 模式：只补装已有工程，不装全局配置、不注册 MCP
         check_python()
         rc = install_project(Path(args.project).resolve())
+        sys.exit(rc)
+
+    if args.repair:
+        # --repair 模式：只刷新已有工程 hooks 路径，不装全局配置
+        check_python()
+        rc = repair_project(Path(args.repair).resolve())
         sys.exit(rc)
 
     print("=" * 60)

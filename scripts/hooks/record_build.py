@@ -58,6 +58,7 @@ def main():
         ram = str(code_size.get("ram") or "N/A")
 
         n_errors = count_errors(resp.get("errors"))
+        retcode = resp.get("returncode")
 
         ts = datetime.datetime.now().isoformat()
         state = {"status": "success" if success else "failed",
@@ -72,8 +73,18 @@ def main():
         if success:
             line = "### 编译 {ts} ✅ Flash {flash} RAM {ram}".format(
                 ts=ts, flash=flash, ram=ram)
-        else:
+        elif n_errors:
             line = "### 编译 {ts} ❌ {n} errors".format(ts=ts, n=n_errors)
+        else:
+            # 失败但 0 个具体错误：链接/目标错误或日志异常。
+            # 带出原因（display 首行 / returncode），避免「❌ 0 errors」误导。
+            hint = ""
+            disp = resp.get("display_for_user")
+            if isinstance(disp, str) and disp.strip():
+                hint = disp.strip().splitlines()[0]
+            line = "### 编译 {ts} ❌ 失败(0 具体错误, {hint})".format(
+                ts=ts, hint=hint or ("returncode={}".format(retcode) if retcode is not None
+                                     else "无 returncode"))
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception:

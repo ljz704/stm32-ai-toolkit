@@ -23,11 +23,11 @@
 
 **⏳ 待验证（下次继续）：**
 - 阶段 1.2 / 1.3：卸载 → `--purge` → 重装 闭环（备份可逆性 / 干净重装）
-- 阶段 1.4：`backup.py` 备份同步（--dry-run 预览 + 执行）
-- 阶段 1.6：F3 脚手架模板分流（demo_f3 → f3xx 文件 / 16KB SRAM）
-- 阶段 3.5：会话结束落盘（finalize_session_log 追加会话结论）
+- 阶段 1.4：`backup.py` 备份同步（--dry-run 预览 ✅，执行同步待跑）
+- 阶段 1.6：F3 脚手架模板分流 —— **已验证 + 修复**（见下 2026-08-14）
+- 阶段 3.5：会话结束落盘 —— **已验证**（追加分隔线+时间戳，追加不覆盖）
 - 阶段 4：硬件验证（无板子，已挂起）—— `probe_info` / `/flash` / 串口两路
-- 阶段 5：工具包改动已提交 git（2026-08-13 本次会话）；`py_compile` 全量收尾仍待做
+- 阶段 5：`py_compile` 全量 ✅；工具包改动已提交 git（2026-08-13 / 2026-08-14）
 
 **✅ CubeMX 代码生成功能（2026-08-13 新增，已验证）：**
 - `cubemx_gen.py`：从 .ioc 无头生成完整工程（Core/Drivers/MDK-ARM）。CLI + `--json` 安静模式
@@ -38,6 +38,20 @@
 - `register_mcp.py` / `install.py`：Keil/Programmer/CubeMX 三路径统一探测（含 D: 盘）+ `-e CUBEMX_PATH=` 烤进注册
 - **实踩并修复**：MCP server（Node 拉起）内 spawn 嵌套 python 卡死 60s → 加 `stdin=DEVNULL` + `CREATE_NO_WINDOW` 解决（见 FAQ）
 - MCP 全链路实测通过：`cubemx_check` 秒回 / `cubemx_generate` 21s 生成 75 文件 / 生成物编译 0 Error
+
+**✅ 2026-08-14 修复与完善（已验证）：**
+- **record_build「❌ 0 errors」误导记录** → 重写 `keil_build` 错误解析：
+  - 摘要行权威计数（`N Error(s)`）+ 真实错误行正则（含 AC5 链接错误 `L6218E` / `Target not created`）
+  - 修复成功时把摘要行 `0 Error(s), 0 Warning(s).` 误抓进 errors 的问题（成功日志 errors 现为空）
+  - 失败但 0 具体错误时带原因落盘（如 `❌ 失败(0 具体错误, ❌ 编译失败)`），杜绝裸 `❌ 0 errors`
+  - 实测：TEST 真实编译 success=True errors=[] returncode=0；4 项脚本断言全过
+- **hooks 路径自愈** → 新增 `install.py --repair <工程>`（等价 `new_project.py --dir <工程> --repair --yes`）：
+  - 工具包移动/换电脑 clone 后一键刷新 `.claude/settings.json` 的 hooks 路径（改前备份，可回退）
+  - 保守策略：已指向当前路径跳过 / 自定义配置（未引用 scripts/hooks）跳过，绝不覆盖
+  - 三场景实测通过（免改 / 陈旧路径备份+重写 / 自定义跳过）
+- **hardware.yaml F3 家族分流修复**：模板 mcu 块原本写死 F1 值（F334 也生成 20KB RAM / M3 / 无 FPU）
+  → 新增 {{MCU_CORE/RAM/FLASH/FPU/STARTUP}} 按模板填充；实测 F334=16KB/M4F/FPU/startup_stm32f334x8.s
+- 阶段 1.4 `backup.py --dry-run` 预览、3.5 `finalize_session_log` 落盘：验证通过
 
 ---
 

@@ -148,6 +148,9 @@ A: 这是 Windows 上 npm 的 `claude.CMD` 批处理 shim 无法被 subprocess �
 **Q: 我只想恢复部分配置？**
 A: 用 `python install.py --no-mcp` 跳过 MCP 注册，`--no-deps` 跳过 pip 依赖；对已有工程补装 AI 辅助层用 `python install.py --project <路径>`。
 
+**Q: 工具包移动后工程 hooks 不生效了？**
+A: hooks 路径是绝对路径。移动工具包 / 换电脑 clone 后，重跑 `python install.py --repair <工程目录>` 刷新即可（只重写 settings.json，带备份，不碰 CLAUDE.md）。
+
 **Q: 想卸载重装（验证/试验阶段）？**
 A: 一键卸载，默认把配置移到备份目录（可恢复），`--purge` 才彻底清理：
 

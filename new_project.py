@@ -22,6 +22,7 @@ new_project.py —— STM32 工程脚手架生成器
 """
 
 import argparse
+import datetime
 import os
 import re
 import sys
@@ -57,6 +58,24 @@ DEFAULT_NAME = "rn8209_meter"
 DEFAULT_MCU = "STM32F103C8T6"
 F1_TEMPLATE = "f1xx_general"
 F3_TEMPLATE = "f3xx_digital_power"
+
+# MCU 家族关键参数（按模板填充 hardware.yaml 的 mcu 块，F1/F3 自动分流）
+FAMILY_META = {
+    F1_TEMPLATE: {
+        "{{MCU_CORE}}": "Cortex-M3",
+        "{{MCU_FLASH_KB}}": "64",
+        "{{MCU_RAM_KB}}": "20",
+        "{{MCU_HAS_FPU}}": "false",
+        "{{MCU_STARTUP}}": "startup_stm32f10x_md.s",
+    },
+    F3_TEMPLATE: {
+        "{{MCU_CORE}}": "Cortex-M4F",
+        "{{MCU_FLASH_KB}}": "64",
+        "{{MCU_RAM_KB}}": "16",
+        "{{MCU_HAS_FPU}}": "true",
+        "{{MCU_STARTUP}}": "startup_stm32f334x8.s",
+    },
+}
 
 MEMORY_FILES = ("architecture.md", "pin_usage.md", "known_issues.md", "session_log.md")
 
@@ -106,13 +125,21 @@ class Prompter:
 
 # ===================== 渲染与推断 =====================
 def render(text: str, project_name: str, mcu_model: str, mdk_project: str,
-           toolkit_path: str = TOOLKIT_PATH, keil_uv4: str = KEIL_UV4) -> str:
-    """渲染模板占位符（str.replace；未出现的占位符原样保留）。"""
+           toolkit_path: str = TOOLKIT_PATH, keil_uv4: str = KEIL_UV4,
+           family: str = None) -> str:
+    """渲染模板占位符（str.replace；未出现的占位符原样保留）。
+
+    family: 模板名（f1xx_general / f3xx_digital_power）。非 None 时再替换
+    FAMILY_META 里的 MCU 家族参数（core / flash / ram / fpu / startup）。
+    """
     text = text.replace("{{PROJECT_NAME}}", project_name)
     text = text.replace("{{MCU_MODEL}}", mcu_model)
     text = text.replace("{{MDK_PROJECT}}", mdk_project)
     text = text.replace("{{TOOLKIT_PATH}}", toolkit_path)
     text = text.replace("{{KEIL_UV4}}", keil_uv4)
+    if family and family in FAMILY_META:
+        for token, val in FAMILY_META[family].items():
+            text = text.replace(token, val)
     return text
 
 
@@ -186,8 +213,10 @@ def generate_full_skeleton(target: Path, project_name: str, mcu_model: str,
         (TEMPLATES_DIR / "MDK-ARM" / "README.md", target / "MDK-ARM" / "README.md"),
     ]
     for src, dst in files:
-        if render_to_file(src, dst, project_name=project_name, mcu_model=mcu_model,
-                          mdk_project=mdk_project):
+        kwargs = dict(project_name=project_name, mcu_model=mcu_model, mdk_project=mdk_project)
+        if src.name.startswith("hardware.yaml"):
+            kwargs["family"] = template  # mcu 块按 F1/F3 家族填充
+        if render_to_file(src, dst, **kwargs):
             created.append(dst)
 
     for mem in MEMORY_FILES:
@@ -208,7 +237,7 @@ def generate_full_skeleton(target: Path, project_name: str, mcu_model: str,
 
 
 def install_existing_layer(target: Path, project_name: str, mcu_model: str,
-                           mdk_project: str, do_hooks: bool):
+                           mdk_project: str, do_hooks: bool, template: str = F1_TEMPLATE):
     """给已有 Keil 工程补装 AI 辅助层，返回创建/更新的文件列表。"""
     touched = []
 
@@ -232,10 +261,11 @@ def install_existing_layer(target: Path, project_name: str, mcu_model: str,
                           mdk_project=mdk_project):
             touched.append(dst)
 
-    # hardware.yaml：不存在才生成
+    # hardware.yaml：不存在才生成（mcu 块按 F1/F3 家族填充）
     hw_dst = target / "hardware.yaml"
     if render_to_file(TEMPLATES_DIR / "hardware.yaml.blank", hw_dst,
-                      project_name=project_name, mcu_model=mcu_model, mdk_project=mdk_project):
+                      project_name=project_name, mcu_model=mcu_model, mdk_project=mdk_project,
+                      family=template):
         touched.append(hw_dst)
 
     # settings.json：生成/更新（覆盖，TOOLKIT_PATH 可能变化）
@@ -252,6 +282,60 @@ def install_existing_layer(target: Path, project_name: str, mcu_model: str,
             warn(f"未找到 hooks 模板: {settings_src}，跳过 settings.json")
 
     return touched
+
+
+def repair_hooks(target: Path, project_name: str, mcu_model: str, mdk_project: str) -> list:
+    """把已有工程 .claude/settings.json 的 hooks 路径刷新到当前工具包。
+
+    用途：工具包被移动 / 换电脑 clone 后，工程里 settings.json 仍指向旧路径，
+    hooks 静默失效。本函数只动 settings.json，不碰 CLAUDE.md / memory / hardware.yaml。
+
+    保守策略：
+      - settings.json 不存在或未引用本工具包 hooks（无 "scripts/hooks"）→ 视为用户自定义配置，跳过；
+      - 已指向当前工具包 → 跳过；
+      - 需要修复 → 先把旧文件改名备份（settings.json.bak_<时间戳>），再按模板重渲染。
+
+    返回处理的文件列表（未处理/跳过时为空）。
+    """
+    p = target / ".claude" / "settings.json"
+    if not p.exists():
+        warn(f"{target} 没有 .claude/settings.json，无需修复")
+        return []
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        warn(f"无法读取 {p}，跳过")
+        return []
+
+    if "scripts/hooks" not in text and "scripts\\hooks" not in text:
+        warn(f"{target}/.claude/settings.json 未引用本工具包 hooks，视为自定义配置，跳过")
+        return []
+
+    cur_fwd = TOOLKIT_PATH
+    if cur_fwd in text or cur_fwd.replace("/", "\\") in text:
+        info(f"{target} hooks 已指向当前工具包，无需修复")
+        return []
+
+    src = TEMPLATES_DIR / "settings.json.template"
+    if not src.exists():
+        warn(f"缺少 hooks 模板: {src}")
+        return []
+
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    bak = p.with_name(f"settings.json.bak_{ts}")
+    try:
+        p.rename(bak)
+    except OSError as e:
+        warn(f"备份旧 settings.json 失败（{e}），跳过")
+        return []
+
+    p.parent.mkdir(parents=True, exist_ok=True)
+    rendered = render(src.read_text(encoding="utf-8"),
+                      project_name=project_name, mcu_model=mcu_model, mdk_project=mdk_project,
+                      toolkit_path=TOOLKIT_PATH)
+    p.write_text(rendered, encoding="utf-8")
+    ok(f"已修复 {target}/.claude/settings.json hooks 路径 -> {cur_fwd}（旧文件备份为 {bak.name}）")
+    return [p]
 
 
 # ===================== 辅助 =====================
@@ -298,6 +382,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="不生成 .claude/settings.json（CLAUDE.md 与 memory 照常）")
     ap.add_argument("--existing", action="store_true",
                     help="目标目录已有 Keil 工程，只补装 AI 辅助层（不创建 src/inc/MDK-ARM）")
+    ap.add_argument("--repair", action="store_true",
+                    help="只刷新已有工程的 hooks 路径到当前工具包（工具包移动后自愈用，不碰其他文件）")
     ap.add_argument("--yes", action="store_true", help="非交互，全部使用默认值")
     return ap.parse_args(argv)
 
@@ -310,6 +396,19 @@ def main(argv=None) -> int:
 
     project_name = args.name or p.ask("项目名", DEFAULT_NAME)
     mdk_project = project_name  # Keil 工程名默认取项目名
+
+    if args.repair:
+        target = Path(args.dir) if args.dir else Path(p.ask("目标目录", f"./{project_name}"))
+        if not target.exists():
+            err(f"目标目录不存在: {target}")
+            return 1
+        touched = repair_hooks(target, project_name, mcu_model=args.mcu or DEFAULT_MCU,
+                               mdk_project=mdk_project)
+        if touched:
+            ok(f"hooks 修复完成，共 {len(touched)} 个文件")
+        else:
+            info("没有需要修复的 hooks（已最新 / 无 settings.json / 自定义配置跳过）")
+        return 0
 
     if args.existing:
         target = Path(args.dir) if args.dir else Path(p.ask("目标目录", f"./{project_name}"))
@@ -344,7 +443,8 @@ def main(argv=None) -> int:
     if args.existing:
         if not target.exists():
             warn(f"目标目录不存在（--existing 模式应指向已有 Keil 工程）: {target}")
-        created = install_existing_layer(target, project_name, mcu_model, mdk_project, do_hooks)
+        created = install_existing_layer(target, project_name, mcu_model, mdk_project, do_hooks,
+                                         template)
     else:
         if target.exists():
             if not target.is_dir():

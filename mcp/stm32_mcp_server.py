@@ -135,12 +135,16 @@ def keil_build(project_path: str, rebuild: bool = False) -> dict:
     raw_log = _read_text_file(log_file)
     errors, warnings = [], []
     flash_size, ram_size = "", ""
+    summary_errors = None  # Keil 摘要行 "N Error(s)" 的权威错误数
+
+    # 真实错误/警告行（与 parse_build_log 格式对齐）：
+    #   - ARMCC 编译错误:   main.c(101): error: #29 ...
+    #   - AC5 链接错误:     .\Objects\TEST.o: Error: L6218E: Undefined symbol ...
+    #   - "Target not created"（链接/输出失败，无具体错误行）
+    err_re = re.compile(r"\berror\s*:|Target not created", re.IGNORECASE)
+    warn_re = re.compile(r"\bwarning\s*:", re.IGNORECASE)
 
     for line in raw_log.splitlines():
-        if "error:" in line.lower() or "Error(s)" in line:
-            errors.append(line.strip())
-        if "warning:" in line.lower() or "Warning(s)" in line:
-            warnings.append(line.strip())
         if "Program Size:" in line:
             parts = line.split("Program Size:")[-1]
             fm = re.search(r"Code=(\d+)", parts)
@@ -150,8 +154,23 @@ def keil_build(project_path: str, rebuild: bool = False) -> dict:
             if rm:
                 rw, zi = int(rm.group(1)), int(rm.group(2))
                 ram_size = f"{rw + zi} bytes (RW={rw} + ZI={zi})"
+            continue
+        s = re.search(r"(\d+)\s*Error\(s\)", line)
+        if s:  # 摘要行，如 "0 Error(s), 0 Warning(s)." —— 不进 errors/warnings，避免误计数
+            summary_errors = int(s.group(1))
+            continue
+        if err_re.search(line):
+            errors.append(line.strip())
+        elif warn_re.search(line):
+            warnings.append(line.strip())
 
-    success = ("0 Error(s)" in raw_log) and (result.returncode in [0, 1])
+    # 成功判定以摘要行权威计数为准；没有摘要行说明构建未正常收尾（日志缺失/链接失败等）
+    if summary_errors is not None:
+        success = (summary_errors == 0) and (result.returncode in (0, 1))
+    else:
+        success = False
+        errors.append(
+            f"BuildLog 未含错误摘要行（returncode={result.returncode}，日志缺失或构建未完成）")
 
     # 生成给用户看的友好输出
     if success:
@@ -176,6 +195,7 @@ def keil_build(project_path: str, rebuild: bool = False) -> dict:
         "code_size": {"flash": flash_size, "ram": ram_size},
         "log_path": log_file,
         "raw_output": raw_log[:3000],
+        "returncode": result.returncode,
         "display_for_user": display  # AI 必须展示这个字段
     }
 
