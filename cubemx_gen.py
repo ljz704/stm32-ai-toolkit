@@ -11,8 +11,15 @@ cubemx_gen.py —— STM32CubeMX 无头代码生成（实验脚本）
     python cubemx_gen.py <xxx.ioc> --out-dir DIR   # 生成到指定目录（先拷贝 ioc 进去）
     python cubemx_gen.py <xxx.ioc> --in-place      # 在 ioc 所在目录生成（覆盖 Core/Drivers，需确认）
     python cubemx_gen.py --check                   # 只检测 CubeMX 环境，不生成
+    python cubemx_gen.py <xxx.ioc> --check-fw      # 只检测所需固件包是否就绪（不生成，缺包不卡）
+    python cubemx_gen.py <xxx.ioc> --ensure-fw     # 尝试补齐固件包（zip 已下载→本地解压；否则提示去 GUI 装）
     python cubemx_gen.py <xxx.ioc> --json          # 安静模式：stdout 只输出一个 JSON 结果
                                                    #   （供 MCP/脚本子进程调用解析）
+
+固件包预检（关键）:
+    生成前先探测仓库（安装目录旁 STM32Cube/Repository 等常见位置）里是否已有
+    目标家族的 STM32Cube_FW_<家族> 包。缺失 → 快速失败返回 missing_firmware，
+    不再让 CubeMX 现场联网下载卡十几分钟。缺包处理见 --ensure-fw。
 
 原理（已实测）:
     STM32CubeMX.exe -q script.txt
@@ -31,11 +38,13 @@ cubemx_gen.py —— STM32CubeMX 无头代码生成（实验脚本）
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -56,7 +65,7 @@ CUBEMX_DEFAULT_PATHS = [
 MX_LOG = Path.home() / ".stm32cubemx" / "STM32CubeMX.log"
 DONE_MARKERS = ("Time for Generating toolchain IDE Files", "mx.scratch is deleted")
 POLL_INTERVAL = 3.0
-DEFAULT_TIMEOUT = 300.0
+DEFAULT_TIMEOUT = 420.0   # CubeMX 启动含网络更新检查，可达 3 分钟；420s 才兜得住
 
 
 # ===================== 输出 =====================
@@ -99,6 +108,157 @@ def ioc_info(ioc_path: Path):
     except OSError as e:
         err(f"读取 {ioc_path} 失败: {e}")
     return mcu, toolchain
+
+
+# ===================== 固件包自检 =====================
+# CubeMX 固件包（STM32Cube FW）仓库常见位置：
+#   安装目录旁：D:\STM32CubeMX\STM32Cube\Repository（多数安装选这里）
+#   用户目录：  %USERPROFILE%\STM32Cube\Repository / C:\Users\Public\STM32Cube\Repository
+# CubeMX 不把仓库路径写进配置文件，只能按常见位置探测。
+def find_repository() -> list:
+    """返回存在的固件仓库候选路径（按优先级，去重）。"""
+    exe = detect_cubemx()
+    candidates = []
+    if exe:
+        exe_dir = Path(exe).parent
+        candidates.append(exe_dir / "STM32Cube" / "Repository")
+        candidates.append(exe_dir / "Repository")
+    candidates += [
+        Path.home() / "STM32Cube" / "Repository",
+        Path.home() / ".stm32cubemx" / "repository",
+        Path(r"C:\Users\Public\STM32Cube\Repository"),
+        Path(r"D:\STM32Cube\Repository"),
+    ]
+    seen, repos = set(), []
+    for p in candidates:
+        key = str(p).lower()
+        if key not in seen and p.is_dir():
+            seen.add(key)
+            repos.append(p)
+    return repos
+
+
+# CubeMX 固件包家族名（对应 STM32Cube_FW_<家族> 目录）。含两位字母家族 WB/WL/WBA 等。
+FW_FAMILIES = [
+    "F0", "F1", "F2", "F3", "F4", "F7", "G0", "G4", "H5", "H7", "H7RS",
+    "L0", "L1", "L4", "L5", "U0", "U3", "U5", "N6", "C0", "M0",
+    "WB", "WBA", "WB0", "WL", "WL3", "W5",
+]
+_FW_FAMILIES_SORTED = sorted(FW_FAMILIES, key=len, reverse=True)
+
+
+def family_from_ioc(ioc_path: Path):
+    """从 .ioc 的 Mcu.Name 推断家族（STM32G474VETx → G4、STM32WB55CGUx → WB）。
+
+    家族可能是两位字母（WB/WL/WBA），不能只取"字母+数字"；用已知家族表做最长前缀匹配。
+    读不到返回 None。
+    """
+    mcu, _ = ioc_info(ioc_path)
+    if not mcu:
+        return None
+    body = mcu[5:].upper() if mcu[:5].upper() == "STM32" else mcu.upper()
+    for fam in _FW_FAMILIES_SORTED:
+        if body.startswith(fam):
+            return fam
+    return None
+
+
+def fw_prefix(family: str) -> str:
+    """家族 → 固件包目录前缀（G4 → STM32Cube_FW_G4）。"""
+    return f"STM32Cube_FW_{family.upper()}"
+
+
+def find_fw_package(repos: list, family: str):
+    """在候选仓库找某家族的固件包。
+
+    返回 (installed_dir, zip_path)：
+      installed_dir：已解压的包目录（STM32Cube_FW_G4_V1.6.3）或 None
+      zip_path     ：已下载的 zip（优先最新版本）或 None
+    """
+    dir_prefix = fw_prefix(family)
+    zip_prefix = f"stm32cube_fw_{family.lower()}_v"
+    installed = None
+    zips = []
+    for repo in repos:
+        if not repo.is_dir():
+            continue
+        try:
+            entries = list(repo.iterdir())
+        except OSError:
+            continue
+        if installed is None:
+            installed = next((p for p in entries
+                              if p.is_dir() and p.name.startswith(dir_prefix)), None)
+        zips += [p for p in entries
+                 if p.is_file() and p.name.lower().startswith(zip_prefix)
+                 and p.suffix.lower() == ".zip"]
+    zips.sort(reverse=True)   # 版本号从大到小，取最新
+    return installed, (zips[0] if zips else None)
+
+
+def check_fw(ioc_path: Path) -> dict:
+    """预检某 .ioc 需要的固件包是否已就绪（不启动 CubeMX）。
+
+    返回 dict：ok / family / required / repos / installed / zip / hint。
+    """
+    repos = find_repository()
+    family = family_from_ioc(ioc_path)
+    if not family:
+        return {
+            "ok": False, "error_type": "no_mcu",
+            "family": None, "required": None,
+            "repos": [str(r) for r in repos],
+            "installed": None, "zip": None,
+            "hint": "无法从 .ioc 读取 MCU 家族，无法预检固件包",
+        }
+    installed, zip_path = find_fw_package(repos, family)
+    required = fw_prefix(family)
+    if installed:
+        hint = f"已安装: {installed.name}"
+    elif zip_path:
+        hint = f"zip 已下载但未解压: {zip_path.name} → 可 --ensure-fw 本地解压"
+    else:
+        hint = f"未找到 {required}。需联网下载/安装（CubeMX GUI → Help → Manage embedded software packages），"
+    return {
+        "ok": installed is not None,
+        "error_type": None if installed else "missing_firmware",
+        "family": family,
+        "required": required,
+        "repos": [str(r) for r in repos],
+        "installed": str(installed) if installed else None,
+        "zip": str(zip_path) if zip_path else None,
+        "hint": hint,
+    }
+
+
+def ensure_fw(ioc_path: Path, yes: bool = False) -> dict:
+    """尝试补齐 .ioc 所需固件包。
+
+    情况 A：已安装 → 直接返回。
+    情况 B：zip 已下载未解压 → 本地解压（快，无需联网）。
+    情况 C：完全没有 → 提示去 CubeMX GUI 安装；若 --yes 则返回 need_download，
+            由调用方决定是否用长超时跑生成（CubeMX 会在生成时联网下载）。
+    """
+    fw = check_fw(ioc_path)
+    if fw["ok"]:
+        return {**fw, "action": "already_installed"}
+    if fw["zip"]:
+        try:
+            with zipfile.ZipFile(fw["zip"]) as zf:
+                zf.extractall(Path(fw["zip"]).parent)
+            installed, _ = find_fw_package(find_repository(), fw["family"])
+            ok(f"已从 {Path(fw['zip']).name} 本地解压固件包")
+            return {**fw, "action": "unzipped", "installed": str(installed) if installed else None,
+                    "ok": installed is not None}
+        except zipfile.BadZipFile as e:
+            warn(f"zip 损坏: {e}")
+            fw["hint"] += "（zip 损坏，需重新下载）"
+            return {**fw, "action": "bad_zip"}
+    # 完全没有 → 无法本地补
+    if not yes:
+        warn(f"缺少固件包 {fw['required']}。安装方式：CubeMX GUI → Help → Manage embedded "
+             "software packages → 勾选该家族安装；或直接跑生成（CubeMX 会联网下载，较慢）")
+    return {**fw, "action": "needs_download"}
 
 
 # ===================== 生成 =====================
@@ -219,6 +379,23 @@ def generate(ioc_path: Path, out_dir: Path, timeout: float, in_place: bool) -> d
     info(f"CubeMX   : {exe}")
     info(f"ioc      : {ioc_path}  (MCU={mcu}, toolchain={toolchain})")
 
+    # ---- 预检：目标芯片所需固件包是否已就绪（缺失则快速失败，不启动 CubeMX 傻等下载） ----
+    fw = check_fw(ioc_path)
+    if not fw["ok"]:
+        result["error_type"] = fw.get("error_type") or "missing_firmware"
+        result["required_fw"] = fw.get("required")
+        result["fw_repos"] = fw.get("repos", [])
+        result["error"] = (
+            f"缺少固件包 {fw.get('required')}，无法生成。\n"
+            f"  仓库探测: {fw.get('repos')}\n"
+            f"  提示: {fw.get('hint')}\n"
+            f"  处理: 先跑 python cubemx_gen.py --ensure-fw <ioc>，"
+            "或在 CubeMX GUI → Help → Manage embedded software packages 安装后重试。"
+        )
+        err(result["error"])
+        return result
+    info(f"固件包   : {fw['required']} 已就绪（{fw.get('installed')}）")
+
     if in_place:
         working = ioc_path.parent
         ioc_for_mx = ioc_path.resolve()
@@ -227,7 +404,10 @@ def generate(ioc_path: Path, out_dir: Path, timeout: float, in_place: bool) -> d
         working = out_dir
         working.mkdir(parents=True, exist_ok=True)
         ioc_for_mx = working / ioc_path.name
-        shutil.copy2(ioc_path, ioc_for_mx)   # 拷贝 ioc 过去，CubeMX 输出到 ioc 所在目录
+        # 若输出目录 == ioc 所在目录（如 new_project 直接生成进目标目录），跳过自拷贝
+        # （Windows 上 copy2 同路径会 PermissionError）
+        if ioc_for_mx.resolve() != ioc_path.resolve():
+            shutil.copy2(ioc_path, ioc_for_mx)   # 拷贝 ioc 过去，CubeMX 输出到 ioc 所在目录
         info(f"输出目录 : {working}")
     result["out_dir"] = str(working)
 
@@ -294,6 +474,10 @@ def main(argv=None) -> int:
     )
     ap.add_argument("ioc", nargs="?", help=".ioc 文件路径")
     ap.add_argument("--check", action="store_true", help="只检测 CubeMX 环境，不生成")
+    ap.add_argument("--check-fw", action="store_true",
+                    help="只检测 .ioc 所需固件包是否就绪，不生成（缺包也不卡住）")
+    ap.add_argument("--ensure-fw", action="store_true",
+                    help="尝试补齐固件包：zip 已下载则本地解压；没有则提示去 GUI 装")
     ap.add_argument("--in-place", action="store_true",
                     help="在 ioc 所在目录生成（覆盖 Core/Drivers，需确认）")
     ap.add_argument("--out-dir", help="生成到指定目录（默认: ioc 旁 cubemx_out/）")
@@ -336,6 +520,33 @@ def main(argv=None) -> int:
         return 1
     if ioc.suffix.lower() != ".ioc":
         warn(f"路径不是 .ioc 文件: {ioc}")
+
+    # ---- --check-fw：只查固件包，不生成 ----
+    if args.check_fw:
+        fw = check_fw(ioc)
+        if args.json:
+            emit(fw)
+        else:
+            info(f"所需固件包: {fw['required']}")
+            info(f"仓库位置  : {fw['repos']}")
+            if fw["ok"]:
+                ok(f"已就绪: {fw['installed']}")
+            else:
+                err(f"缺失: {fw['hint']}")
+        return 0 if fw["ok"] else 1
+
+    # ---- --ensure-fw：尝试补齐固件包 ----
+    if args.ensure_fw:
+        fw = ensure_fw(ioc, yes=args.yes)
+        if args.json:
+            emit(fw)
+        else:
+            info(f"所需固件包: {fw['required']} | 动作: {fw['action']}")
+            if fw["ok"]:
+                ok(f"已就绪: {fw['installed']}")
+            else:
+                err(f"未就绪: {fw['hint']}")
+        return 0 if fw["ok"] else 1
 
     # ---- 确认 in-place 覆盖（非交互 / MCP --json 下跳过，靠调用方兜底） ----
     if args.in_place and not args.yes and not args.json and sys.stdin.isatty():

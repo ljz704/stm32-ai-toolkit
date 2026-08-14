@@ -24,22 +24,33 @@ ls %USERPROFILE%\.claude\commands\   # 6 个命令
 
 ## 二、在工程里怎么用
 
-### 1. 新建工程
+### 1. 新建工程（CubeMX 优先，全家族统一）
 
 ```bash
+# 默认路径：任意型号 → make_ioc(型号→最小.ioc) → CubeMX 无头生成完整 HAL 工程 → 补装 AI 层
 python new_project.py --name meter --mcu STM32F103CBT6 --yes
-# 或对已有 Keil 工程只补装 AI 层：
+python new_project.py --name meter --mcu STM32G431CBT6 --yes      # 非 SPL 家族同样一条命令
+# SPL 旧路径（仅 F0/F1/F2/F3/F4/L1 有模板）：
+python new_project.py --name meter --mcu STM32F103CBT6 --template f1xx_general --yes
+# 只建 config-only 骨架（不生成代码，只装 AI 层）：
+python new_project.py --name meter --mcu STM32G431CBT6 --no-cubemx --yes
+# 对已有 Keil 工程只补装 AI 层：
 python new_project.py --dir <已有工程> --existing --yes
 # 只解析型号、预览规格（不建工程，/newproject 对话里用于确认）：
 python new_project.py --query-mcu STM32G431CBT6 --json
 ```
 
-生成的内容：`CLAUDE.md`（含 `@.claude/memory/*.md` 自动加载）、`.claude/settings.json`（hooks）、`.claude/memory/`（架构/引脚/坑记录/会话日志）、`hardware.yaml`、`src/`、`inc/`。
+**CubeMX 优先（默认）**：不传 `--template` 时，任何型号都自动执行——
+1. `make_ioc.py`：型号 → 最小 `.ioc`（RCC 时钟块取自已装固件包的官方示例，老家族 F0/F1 用内置模板）；
+2. `cubemx_gen.py` 无头生成完整 HAL 工程（`Core/` `Drivers/` `MDK-ARM/<名>.uvprojx`），直接落进目标目录；
+3. 自动补装 AI 辅助层（CLAUDE.md / hardware.yaml / .claude/）。
 
-**型号知识库（mcu_knowledge.py）自动解析**：`--mcu` 给完整型号即可，核心/FPU/最高主频/Flash/RAM/引脚数/启动文件会按型号精确填充进 `hardware.yaml` 与 `CLAUDE.md`，不再默认 C8T6。
+生成约 20s~3 分钟（含 CubeMX 启动）。**缺对应家族固件包**（如 FW_G4）时会先给 config-only 骨架并提示安装，装好重跑即补全。
 
-- **模板按家族自动选**：F1→`f1xx_general`、F3→`f3xx_digital_power`、F4/F2→`f4xx_spl`（新增 stm32f4xx_it.c/conf.h）。
-- **config-only 骨架**：F0/L1（SPL 但无专用模板）与全部**非 SPL 家族**（F7/G0/G4/H7/L4/L5/U5/WB）只生成 CLAUDE.md/.claude/hardware.yaml，不生成 src/inc 移植文件；非 SPL 家族会提示转 CubeMX/HAL。
+**型号知识库（mcu_knowledge.py）自动解析**：`--mcu` 给完整型号即可，核心/FPU/最高主频/Flash/RAM/引脚数会按型号精确填充进 `hardware.yaml` 与 `CLAUDE.md`，不再默认 C8T6。
+
+- **`--template`（SPL 旧路径，可选）**：F1→`f1xx_general`、F3→`f3xx_digital_power`、F4/F2→`f4xx_spl`；其他家族传 `--template` 无匹配 → 退 config-only。
+- **`--no-cubemx`（config-only 骨架）**：只生成 CLAUDE.md/.claude/hardware.yaml，不生成代码。
 - 型号解析不出/查不到 → 缺失项标 `TBD` 并告警，配合 `/newproject` 对话确认流程兜底。
 
 独立查询型号规格：
@@ -48,6 +59,14 @@ python new_project.py --query-mcu STM32G431CBT6 --json
 python mcu_knowledge.py --query STM32F103CBT6        # 人类可读
 python mcu_knowledge.py --query STM32F103CBT6 --json # 纯 ASCII JSON（给 Claude 解析）
 python mcu_knowledge.py --list-families              # 家族核心/FPU/SPL 支持一览
+```
+
+独立生成工程相关脚本：
+
+```bash
+python make_ioc.py STM32G431CBT6 -o g4.ioc           # 型号 → 最小 .ioc（不启动 CubeMX）
+python cubemx_gen.py g4.ioc                          # .ioc → 无头生成 HAL 工程
+python cubemx_gen.py --ensure-fw g4.ioc              # 缺固件包时检查/提示安装
 ```
 
 ### 2. Claude Code 斜杠命令
@@ -59,7 +78,7 @@ python mcu_knowledge.py --list-families              # 家族核心/FPU/SPL 支�
 | `/serial` | 列出串口并实时监控（serial_live.py） |
 | `/review` | 用代码审查 Skill 审查当前代码 |
 | `/newissue` | 记录一个踩坑/经验到 known_issues.md |
-| `/newproject` | 对话式新建工程：先问项目名 + **完整芯片型号** → 解析规格给用户确认 → 选 SPL 骨架或 CubeMX 生成 |
+| `/newproject` | 对话式新建工程：先问项目名 + **完整芯片型号** → 解析规格给用户确认 → 默认 CubeMX 无头生成（全家族统一，可改 SPL/config-only） |
 
 ### 3. MCP 工具（Claude 自动调用）
 

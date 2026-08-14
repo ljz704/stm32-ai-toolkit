@@ -9,16 +9,20 @@ new_project.py —— STM32 工程脚手架生成器
 用法：
   python new_project.py [--name <项目名>] [--mcu <型号>] [--dir <目录>]
                         [--template f1xx_general|f3xx_digital_power|f4xx_spl]
-                        [--no-git] [--no-hooks] [--existing] [--repair]
-                        [--query-mcu <型号>] [--json] [--yes]
+                        [--no-cubemx] [--no-git] [--no-hooks] [--existing]
+                        [--repair] [--query-mcu <型号>] [--json] [--yes]
 
 说明：
-  - MCU 型号交给 mcu_knowledge.py 知识库解析：核心/FPU/Flash/RAM/引脚数/启动文件
-    自动按型号填充进 hardware.yaml 与 CLAUDE.md，家族决定用哪个模板。
-  - 模板选择：F1→f1xx_general、F3→f3xx_digital_power、F4/F2→f4xx_spl；
-    F0/L1（SPL 但无专用模板）与全部非 SPL 家族（G4/H7/F7/L4 等）→ **config-only 骨架**
-    （只生成 CLAUDE.md/.claude/hardware.yaml，不生成 src/inc 的 SPL 移植文件）。
-  - 非 SPL 家族会在生成时提示转 CubeMX/HAL。
+  - **CubeMX 优先（默认路径，全家族统一）**：默认不传 --template 时，对任何型号
+    都走 make_ioc.py（型号→最小 .ioc，RCC 时钟块取自官方示例/内置模板）
+    + cubemx_gen.py（无头生成完整 HAL 工程：Core/Drivers/MDK-ARM + .uvprojx），
+    生成后自动补装 AI 辅助层。不再区分 SPL / 非 SPL 家族——一律 CubeMX/HAL。
+  - 若该型号缺固件包 / 无 RCC 来源等导致生成失败 → 自动退化为 config-only 骨架
+    （只生成 CLAUDE.md/.claude/hardware.yaml），并给出明确提示。
+  - --template <模板名>：**SPL 旧路径**（可选/遗留）。按家族选 SPL 模板生成
+    src/inc/MDK-ARM 骨架：F1→f1xx_general、F3→f3xx_digital_power、F4/F2→f4xx_spl；
+    其他家族传 --template 无匹配 → 退 config-only。
+  - --no-cubemx：跳过 CubeMX 尝试，直接 config-only 骨架（纯 AI 层，不生成代码）。
   - --query-mcu <型号>：只打印解析规格，不建工程（给 /newproject 对话预览确认用）。
   - 占位符用 str.replace 渲染：{{PROJECT_NAME}}、{{MCU_MODEL}}、{{MDK_PROJECT}}、
     {{KEIL_UV4}}、settings.json.template 里的 {{TOOLKIT_PATH}}，以及 mcu_knowledge
@@ -280,6 +284,45 @@ def generate_full_skeleton(target: Path, project_name: str, mcu_model: str,
     return created
 
 
+def run_cubemx_flow(target: Path, project_name: str, mcu_model: str) -> dict:
+    """CubeMX 优先路径：make_ioc（型号→最小 .ioc）→ 无头生成完整 HAL 工程。
+
+    生成直接输出到 target（HAL 的 Core/Drivers/MDK-ARM 落进目标目录，不套 cubemx_out/）。
+    返回 dict：{ok, ioc?, gen?, error?, error_type?}。
+    失败（缺固件包 / 无 RCC 来源 / 超时）时 ok=False 带可读 error，由调用方退化为
+    config-only 骨架。惰性 import，避免拖慢 --query-mcu / --repair / --existing。
+    """
+    from make_ioc import make_ioc
+    from cubemx_gen import generate, DEFAULT_TIMEOUT
+
+    result = {"ok": False}
+    info(f"第 1 步: make_ioc 生成最小 .ioc（型号 {mcu_model}）...")
+    r = make_ioc(mcu_model, project_name=project_name)
+    if not r.get("ok"):
+        result["error"] = r.get("error", "make_ioc 失败")
+        result["error_type"] = r.get("error_type")
+        err(result["error"])
+        return result
+
+    ioc_path = target / f"{project_name}.ioc"
+    ioc_path.write_text(r["ioc"], encoding="utf-8")
+    result["ioc"] = ioc_path
+    ok(f"  {ioc_path.name}（MCU={r.get('mcu_name')}，固件包={r.get('fw')}）")
+    if r.get("clock_note"):
+        info(f"  时钟: {r['clock_note']}")
+
+    info(f"第 2 步: CubeMX 无头生成（输出到 {target}，首次 3 分钟+ 耐心等待）...")
+    gen = generate(ioc_path, out_dir=target, timeout=DEFAULT_TIMEOUT, in_place=False)
+    result["gen"] = gen
+    if not gen.get("success"):
+        result["error"] = gen.get("error") or "CubeMX 生成失败"
+        result["error_type"] = gen.get("error_type")
+        err(result["error"])
+        return result
+    result["ok"] = True
+    return result
+
+
 def install_existing_layer(target: Path, project_name: str, mcu_model: str,
                            mdk_project: str, do_hooks: bool, mcu_tokens: dict) -> list:
     """给已有 Keil 工程补装 AI 辅助层，返回创建/更新的文件列表。"""
@@ -399,9 +442,18 @@ def do_git_init(target: Path) -> None:
         warn(f"git init 未成功: {result.combined.strip() or result.error}")
 
 
-def print_next_steps(target: Path, template: str, mcu_info: dict = None) -> None:
+def print_next_steps(target: Path, template: str, mcu_info: dict = None,
+                     cubemx_ok: bool = False) -> None:
     print()
     info("=" * 58)
+    if cubemx_ok:
+        info("下一步（CubeMX 已生成完整 HAL 工程）：")
+        info(f"  1. 进 {target} 打开 Claude Code，运行 /build 验证编译")
+        info("  2. 需配置引脚/外设时，用 CubeMX GUI 打开同目录 <工程名>.ioc 调整后重新生成")
+        info("  3. hardware.yaml 的 clock / 外设表按实际板卡补充")
+        info("  4. git init 并首次提交（若未在本脚本执行）")
+        info("=" * 58)
+        return
     if template is None:
         # config-only 骨架
         if mcu_info and mcu_info["spl"] is False:
@@ -436,8 +488,11 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--mcu", help="MCU 完整型号，如 STM32F103CBT6 / STM32F334C8T6 / STM32G431CBT6")
     ap.add_argument("--dir", help="目标目录（默认 ./<项目名>）")
     ap.add_argument("--template", choices=[F1_TEMPLATE, F3_TEMPLATE, F4_TEMPLATE],
-                    help=f"模板（默认按 MCU 家族推断：F1→{F1_TEMPLATE}，F3→{F3_TEMPLATE}，"
-                         f"F4/F2→{F4_TEMPLATE}；F0/L1/非 SPL → config-only）")
+                    help=f"SPL 旧路径模板（传了就不走 CubeMX；默认按 MCU 家族推断："
+                         f"F1→{F1_TEMPLATE}，F3→{F3_TEMPLATE}，F4/F2→{F4_TEMPLATE}；"
+                         f"F0/L1/非 SPL → config-only）")
+    ap.add_argument("--no-cubemx", action="store_true",
+                    help="跳过 CubeMX 无头生成，直接建 config-only 骨架（不生成代码）")
     ap.add_argument("--query-mcu", metavar="MODEL",
                     help="只打印型号解析规格，不建工程（/newproject 对话预览确认用）")
     ap.add_argument("--json", action="store_true",
@@ -509,8 +564,12 @@ def main(argv=None) -> int:
     if mcu_info["missing"]:
         warn(f"型号 {mcu_model} 有字段缺失: {', '.join(mcu_info['missing']) or '格式'}，"
              "缺失项将填 TBD，请用 --query-mcu 确认或修正型号")
-    if mcu_info["spl"] is False:
-        info(f"{mcu_info['family']} 无标准外设库(SPL)，建议 CubeMX/HAL 生成（本骨架为 config-only）")
+    if args.template and mcu_info["spl"] is False:
+        warn(f"{mcu_info['family']} 无标准外设库(SPL)，SPL 模板仅供 F0/F1/F2/F3/F4/L1；"
+             "该型号建议去掉 --template 走 CubeMX 路径")
+
+    # CubeMX 优先：默认（未指定 --template）任何家族都走无头生成；--no-cubemx 跳过
+    want_cubemx = args.template is None and not args.no_cubemx
 
     do_git = not args.no_git
     do_hooks = not args.no_hooks
@@ -520,11 +579,14 @@ def main(argv=None) -> int:
         if not args.no_hooks:
             do_hooks = p.ask_yesno("生成 hooks(.claude/settings.json)", default=True)
 
-    if config_only:
+    if want_cubemx:
+        info(f"项目: {project_name} | MCU: {mcu_model} | 方式: CubeMX 无头生成 | 目录: {target}")
+    elif config_only:
         info(f"项目: {project_name} | MCU: {mcu_model} | config-only 骨架 | 目录: {target}")
     else:
         info(f"项目: {project_name} | MCU: {mcu_model} | 模板: {template} | 目录: {target}")
 
+    cubemx_ok = False
     if args.existing:
         if not target.exists():
             warn(f"目标目录不存在（--existing 模式应指向已有 Keil 工程）: {target}")
@@ -541,9 +603,27 @@ def main(argv=None) -> int:
                     warn(f"目录非空，已跳过生成: {target}")
                     return 1
         target.mkdir(parents=True, exist_ok=True)
-        created = generate_full_skeleton(target, project_name, mcu_model, template,
-                                         mdk_project, do_hooks, mcu_tokens,
-                                         full=not config_only)
+        if want_cubemx:
+            flow = run_cubemx_flow(target, project_name, mcu_model)
+            if flow.get("ok"):
+                cubemx_ok = True
+                # uvprojx 名 = ioc 名 = 项目名，但以实际产物为准（hooks 编译命令指向它）
+                mdk_project = Path(flow["gen"]["uvprojx"]).stem
+                info(f"CubeMX 生成 {flow['gen'].get('generated_count', 0)} 个文件"
+                     f"（Core/Drivers/MDK-ARM 已就绪），补装 AI 辅助层...")
+                created = install_existing_layer(target, project_name, mcu_model,
+                                                 mdk_project, do_hooks, mcu_tokens)
+            else:
+                err(f"CubeMX 路径失败: {flow.get('error')}")
+                if flow.get("error_type") == "missing_firmware":
+                    info("装好固件包后重跑本命令即可生成完整 HAL 工程，先给 config-only 骨架。")
+                created = generate_full_skeleton(target, project_name, mcu_model, None,
+                                                 mdk_project, do_hooks, mcu_tokens,
+                                                 full=False)
+        else:
+            created = generate_full_skeleton(target, project_name, mcu_model, template,
+                                             mdk_project, do_hooks, mcu_tokens,
+                                             full=not config_only)
 
     if created:
         ok(f"已生成/更新 {len(created)} 个文件:")
@@ -555,7 +635,7 @@ def main(argv=None) -> int:
     if do_git:
         do_git_init(target)
 
-    print_next_steps(target, template, mcu_info)
+    print_next_steps(target, template, mcu_info, cubemx_ok=cubemx_ok)
     return 0
 
 

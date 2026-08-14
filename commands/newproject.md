@@ -34,42 +34,29 @@ python mcu_knowledge.py --query <型号> --json
 - **HSE 晶振**（默认 8MHz）——影响 hardware.yaml 的 clock 块。
 - **核心功能**一句话（用于 CLAUDE.md 项目信息，可选）。
 
-## 第 4 步：选生成方式
+## 第 4 步：选生成方式（CubeMX 优先，全家族统一）
 
-**情况 A：型号是 SPL 家族**（F0/F1/F2/F3/F4/L1，`spl: true`）：
+默认对**任何家族**（F0/F1/F3/F4/G4/H7…）都走 **CubeMX 无头生成**：
+new_project.py 自动完成「型号→最小 .ioc（make_ioc，RCC 取自官方示例）→ CubeMX 生成完整
+HAL 工程（Core/Drivers/MDK-ARM）→ 补装 AI 辅助层」。无需用户已有 .ioc。
 
-- 问用户二选一：
-  1. **建 SPL 骨架**（默认）→ 走第 5 步 A。
-  2. **已有 .ioc → CubeMX 无头生成** → 走第 5 步 B。
+只有两种情况让用户选：
+- 用户明确要 **SPL 骨架**（仅 F0/F1/F2/F3/F4/L1 有模板）→ 加 `--template f1xx_general|f3xx_digital_power|f4xx_spl`。
+- 用户只要 **config-only 骨架**（只含 CLAUDE.md/.claude/hardware.yaml，不生成代码）→ 加 `--no-cubemx`。
 
-**情况 B：型号非 SPL 家族**（F7/G0/G4/H7/L4/L5/U5/WB，`spl: false`）：
-
-- **推荐 CubeMX/HAL**：
-  - 用户有该芯片的 `.ioc` → 走第 5 步 B（生成后补装 AI 层）。
-  - 没有 `.ioc` → 用 new_project.py 建 **config-only 骨架**（只含 CLAUDE.md/.claude/hardware.yaml，规格已按型号填好），并提示后续用 CubeMX 生成后补装。走第 5 步 A。
+> 生成需要已装对应家族的 STM32Cube FW 包。缺包时脚本给出明确提示，先建 config-only 骨架，
+> 用户装好包后重跑即可补全。
 
 ## 第 5 步：执行
-
-**A. 建骨架（new_project.py）**：
 
 ```
 python new_project.py --name <项目名> --mcu <完整型号> --dir <目标目录> --yes
 ```
 
-- 非 SPL 家族时脚本会自动走 config-only；SPL 家族按家族自动选 f1xx/f3xx/f4xx 模板。
-- 成功后向用户展示生成的文件清单。
-
-**B. CubeMX 生成 + 补装 AI 层**：
-
-```
-# 1) 无头生成（in_place 默认关闭，输出到 <ioc 同目录>/cubemx_out/）
-#    用 MCP 工具 cubemx_generate，ioc_path 指向用户的 .ioc
-
-# 2) 生成完成后，给生成目录补装 AI 辅助层（CLAUDE.md / hooks / hardware.yaml）
-python install.py --project <生成目录>
-```
-
-> CubeMX 生成前可先 `cubemx_check` 确认工具可用；生成约 20s~3 分钟。
+- 默认 CubeMX 路径：生成 <目标目录>/<项目名>.ioc + Core/Drivers/MDK-ARM/<项目名>.uvprojx + AI 层。
+- `--template <模板名>`：SPL 旧路径骨架；`--no-cubemx`：config-only 骨架。
+- 生成约 20s~3 分钟（首次含 CubeMX 启动与网络检查）。生成前可先 `cubemx_check` 确认工具可用。
+- 成功后向用户展示生成的文件清单 + uvprojx 路径。
 
 ## 收尾
 

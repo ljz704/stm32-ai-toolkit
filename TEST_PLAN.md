@@ -187,21 +187,50 @@ python mcu_knowledge.py --query STM32H743ZIT6 --json    # → 2M / 992K / 480MHz
 python mcu_knowledge.py --query "不是型号" --json        # → missing 非空，不崩溃
 ```
 
-**多家族脚手架：**
+**多家族脚手架（默认已改 CubeMX 优先，SPL/config-only 走显式参数）：**
 
 ```bash
-python new_project.py --name t1 --mcu STM32F103CBT6 --dir <tmp> --no-git --yes   # f1xx 全骨架，hw=128K/20K/pins48
-python new_project.py --name t2 --mcu STM32F334C8T6 --dir <tmp> --no-git --yes   # f3xx 全骨架，16K/M4F
-python new_project.py --name t3 --mcu STM32G431CBT6 --dir <tmp> --no-git --yes   # config-only，无 src/inc，提示 CubeMX
-python new_project.py --name t4 --mcu STM32H743ZIT6 --dir <tmp> --no-git --yes   # config-only，480MHz/2M
+# SPL 旧路径（不启动 CubeMX）：
+python new_project.py --name t1 --mcu STM32F103CBT6 --template f1xx_general --dir <tmp> --no-git --yes   # f1xx 全骨架，hw=128K/20K/pins48
+python new_project.py --name t2 --mcu STM32F334C8T6 --template f3xx_digital_power --dir <tmp> --no-git --yes  # f3xx 全骨架，16K/M4F
+# config-only（--no-cubemx，不启动 CubeMX）：
+python new_project.py --name t3 --mcu STM32G431CBT6 --no-cubemx --dir <tmp> --no-git --yes   # 无 src/inc，只装 AI 层
+python new_project.py --name t4 --mcu STM32H743ZIT6 --no-cubemx --dir <tmp> --no-git --yes   # 480MHz/2M
 ```
 
 **通过标准：**
-- [ ] 各型号 `hardware.yaml` mcu 块核心/FPU/主频/Flash/RAM/引脚数/启动文件与数据手册一致（CBT6=128K、G431=32K、H743=992K）
-- [ ] F1/F3/F4 生成 src/inc/MDK-ARM 全套 + 对应 it.c/conf.h；G4/H7 只生成 7 个 config 文件（无 src/inc）
-- [ ] 非 SPL 家族输出「无标准外设库(SPL)，建议 CubeMX/HAL 生成」提示
-- [ ] `new_project.py --query-mcu STM32F103CBT6 --json` 输出与 mcu_knowledge 一致
-- [ ] `/newproject` 对话流：问型号 → 展示规格确认 → 选生成方式 → 产出工程
+- [x] 各型号 `hardware.yaml` mcu 块核心/FPU/主频/Flash/RAM/引脚数/启动文件与数据手册一致（CBT6=128K、G431=32K、H743=992K）—— 已实测四份
+- [x] `--template`：F1/F3/F4 生成 src/inc/MDK-ARM 全套 + 对应 it.c/conf.h；`--no-cubemx` 只生成 7 个 config 文件（无 src/inc）
+- [x] `new_project.py --query-mcu STM32F407ZGT6 --json` 输出与 mcu_knowledge 完全一致（diff 为空）
+- [x] 默认（无 `--template`）走 CubeMX 路径且打印「方式: CubeMX 无头生成」；F103/G431 两条 e2e 见 1.9
+- [ ] `/newproject` 对话流：问型号 → 展示规格确认 → 默认 CubeMX 生成 → 产出工程（需在工程里交互测，命令已同步安装最新版）
+
+### 1.9 型号→.ioc→无头生成（make_ioc.py + cubemx_gen.py，CubeMX 优先核心链路）
+
+**单测（不启动 CubeMX）：**
+
+```bash
+python make_ioc.py STM32F103C8T6 --json      # ok=true；mcu_name=STM32F103C(8-B)Tx；package_name=LQFP48；rcc_source=内置模板（F1）
+python make_ioc.py STM32G431CBT6 --json      # ok=true；mcu_name=STM32G431C(6-8-B)Tx；example=<FW_G4 官方示例路径>；example_clock 带 HSE/PLLM
+python make_ioc.py STM32WB55CGU6 --json      # ok=false；error_type=missing_firmware；required_fw=STM32Cube_FW_WB
+python make_ioc.py STM32F334C8T6 --json      # ok=false；error_type=missing_firmware（未装 FW_F3）
+```
+
+**端到端（启动 CubeMX，20s~3 分钟）：**
+
+```bash
+# F1 兜底 RCC 家族（包内无官方 .ioc 示例）
+python new_project.py --name np_f103 --mcu STM32F103C8T6 --dir <tmp> --yes --no-git
+# G4 官方示例 RCC 家族
+python new_project.py --name np_g4 --mcu STM32G431CBT6 --dir <tmp> --yes --no-git
+```
+
+**通过标准（2026-08-14 已实测两条）:**
+- [x] F103：21.1s 生成 73 文件 + `MDK-ARM/np_f103.uvprojx`；AI 层 7 文件；ioc 含 `FirmwarePackage=STM32Cube FW_F1 V1.8.7`（带 V）、无 `VP_RCC_VS_HSE`、`PinsNb=1`
+- [x] G431：21.1s 生成 82 文件 + `MDK-ARM/np_g4.uvprojx`；RCC 块取自官方示例（HSE=24MHz、PLLM=DIV4）
+- [x] 缺固件包家族 fail-fast（WB 报 missing_firmware，不启动 CubeMX 傻等）
+- [x] `out_dir == ioc 所在目录` 时 generate 跳过自拷贝（修复 WinError 32 PermissionError）
+- [x] Keil 打开生成的 uvprojx 能编译通过：`new_project.py --name np_f103_keil --mcu STM32F103C8T6` → keil_build 0 Error / 0 Warning，Flash 2062B / RAM 1648B（Compiler V5.06 update 7）
 
 ---
 
