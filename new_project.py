@@ -8,21 +8,26 @@ new_project.py —— STM32 工程脚手架生成器
 
 用法：
   python new_project.py [--name <项目名>] [--mcu <型号>] [--dir <目录>]
-                        [--template f1xx_general|f3xx_digital_power]
-                        [--no-git] [--no-hooks] [--existing] [--yes]
+                        [--template f1xx_general|f3xx_digital_power|f4xx_spl]
+                        [--no-git] [--no-hooks] [--existing] [--repair]
+                        [--query-mcu <型号>] [--json] [--yes]
 
 说明：
-  - 交互模式逐个提问；带 --yes 或 stdin 非 tty（AI / install.py 委托调用）时用默认值不阻塞。
-  - MCU 型号含 "F3" 自动选 f3xx_digital_power，否则 f1xx_general，可 --template 显式指定。
-  - --existing：目标目录已有 Keil 工程，只补装 AI 辅助层
-    （CLAUDE.md / .claude/settings.json / memory 空白模板 / hardware.yaml），
-    不创建 src/inc/MDK-ARM。
-  - 占位符用 str.replace 渲染：{{PROJECT_NAME}}、{{MCU_MODEL}}、{{MDK_PROJECT}}（默认=项目名）、
-    {{KEIL_UV4}}（自动检测 Keil 路径）、settings.json.template 里的 {{TOOLKIT_PATH}}（反斜杠转成 /）。
+  - MCU 型号交给 mcu_knowledge.py 知识库解析：核心/FPU/Flash/RAM/引脚数/启动文件
+    自动按型号填充进 hardware.yaml 与 CLAUDE.md，家族决定用哪个模板。
+  - 模板选择：F1→f1xx_general、F3→f3xx_digital_power、F4/F2→f4xx_spl；
+    F0/L1（SPL 但无专用模板）与全部非 SPL 家族（G4/H7/F7/L4 等）→ **config-only 骨架**
+    （只生成 CLAUDE.md/.claude/hardware.yaml，不生成 src/inc 的 SPL 移植文件）。
+  - 非 SPL 家族会在生成时提示转 CubeMX/HAL。
+  - --query-mcu <型号>：只打印解析规格，不建工程（给 /newproject 对话预览确认用）。
+  - 占位符用 str.replace 渲染：{{PROJECT_NAME}}、{{MCU_MODEL}}、{{MDK_PROJECT}}、
+    {{KEIL_UV4}}、settings.json.template 里的 {{TOOLKIT_PATH}}，以及 mcu_knowledge
+    解析出的 {{MCU_CORE/FLASH/RAM/FPU/STARTUP/MAX_FREQ/PINS/PACKAGE/DENSITY/FAMILY_LABEL/SPL}}。
 """
 
 import argparse
 import datetime
+import json
 import os
 import re
 import sys
@@ -58,31 +63,24 @@ DEFAULT_NAME = "rn8209_meter"
 DEFAULT_MCU = "STM32F103C8T6"
 F1_TEMPLATE = "f1xx_general"
 F3_TEMPLATE = "f3xx_digital_power"
+F4_TEMPLATE = "f4xx_spl"       # 新增：F4/F2 用（M4F 移植文件）
 
-# MCU 家族关键参数（按模板填充 hardware.yaml 的 mcu 块，F1/F3 自动分流）
-FAMILY_META = {
-    F1_TEMPLATE: {
-        "{{MCU_CORE}}": "Cortex-M3",
-        "{{MCU_FLASH_KB}}": "64",
-        "{{MCU_RAM_KB}}": "20",
-        "{{MCU_HAS_FPU}}": "false",
-        "{{MCU_STARTUP}}": "startup_stm32f10x_md.s",
-    },
-    F3_TEMPLATE: {
-        "{{MCU_CORE}}": "Cortex-M4F",
-        "{{MCU_FLASH_KB}}": "64",
-        "{{MCU_RAM_KB}}": "16",
-        "{{MCU_HAS_FPU}}": "true",
-        "{{MCU_STARTUP}}": "startup_stm32f334x8.s",
-    },
+# 家族 → SPL 模板名（只列出有专用 src/inc 模板的家族）
+TEMPLATE_BY_FAMILY = {
+    "F1": F1_TEMPLATE,
+    "F3": F3_TEMPLATE,
+    "F4": F4_TEMPLATE,
+    "F2": F4_TEMPLATE,          # F2 与 F4 同为 M4 系 SPL，暂复用 f4xx 移植文件
 }
+# 其他 SPL 家族（F0/L1）没有专用模板 → config-only；非 SPL 家族一律 config-only。
 
 MEMORY_FILES = ("architecture.md", "pin_usage.md", "known_issues.md", "session_log.md")
 
-MCU_RE = re.compile(r"STM32F\d{2}[A-Z0-9]+", re.IGNORECASE)
+MCU_RE = re.compile(r"STM32[FGLHUC]\d{2}[A-Z0-9]+", re.IGNORECASE)
 
 sys.path.insert(0, str(SCRIPT_DIR))
 from _cmdutil import fix_console_encoding, run_cmd  # noqa: E402
+import mcu_knowledge  # noqa: E402
 
 
 # ===================== 输出 =====================
@@ -123,37 +121,74 @@ class Prompter:
         return default
 
 
+# ===================== 型号知识库对接 =====================
+def select_template(mcu_info: dict):
+    """按家族选 SPL 模板名；config-only 家族返回 None。"""
+    fam = mcu_info["family"]
+    if not fam:
+        warn("无法识别型号家族，回退 f1xx_general 模板")
+        return F1_TEMPLATE
+    if mcu_info["spl"] is False:
+        return None                    # 非 SPL：走 CubeMX/HAL，config-only
+    return TEMPLATE_BY_FAMILY.get(fam)  # F0/L1 等无专用模板 → None → config-only
+
+
+def mcu_tokens_from_info(mcu_info: dict) -> dict:
+    """把 mcu_knowledge 解析结果转成模板替换表。
+
+    None 值（缺失字段）填 "TBD"（待确认）；非 SPL 家族的 startup 填 "N/A"
+    （HAL/CubeMX 自生成，无启动文件概念）。
+    """
+    def s(v, na="TBD"):
+        if v is None:
+            return na
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        return str(v)
+
+    startup = "N/A" if (mcu_info["spl"] is False) else s(mcu_info["startup"])
+    return {
+        "{{MCU_MODEL}}": mcu_info["model"] or "N/A",
+        "{{MCU_FAMILY_LABEL}}": s(mcu_info["family_label"]),
+        "{{MCU_CORE}}": s(mcu_info["core"]),
+        "{{MCU_MAX_FREQ}}": s(mcu_info["max_freq_mhz"]),
+        "{{MCU_FLASH_KB}}": s(mcu_info["flash_kb"]),
+        "{{MCU_RAM_KB}}": s(mcu_info["ram_kb"]),
+        "{{MCU_HAS_FPU}}": s(mcu_info["fpu"]),
+        "{{MCU_PACKAGE}}": s(mcu_info["package"]),
+        "{{MCU_PINS}}": s(mcu_info["pins"]),
+        "{{MCU_DENSITY}}": s(mcu_info["density"]),
+        "{{MCU_STARTUP}}": startup,
+        "{{MCU_SPL}}": "true" if mcu_info["spl"] else "false",
+        "{{MCU_SPL_TEXT}}": "标准外设库(SPL)" if mcu_info["spl"] else "HAL/CubeMX（无 SPL）",
+    }
+
+
 # ===================== 渲染与推断 =====================
 def render(text: str, project_name: str, mcu_model: str, mdk_project: str,
            toolkit_path: str = TOOLKIT_PATH, keil_uv4: str = KEIL_UV4,
-           family: str = None) -> str:
+           mcu_tokens: dict = None) -> str:
     """渲染模板占位符（str.replace；未出现的占位符原样保留）。
 
-    family: 模板名（f1xx_general / f3xx_digital_power）。非 None 时再替换
-    FAMILY_META 里的 MCU 家族参数（core / flash / ram / fpu / startup）。
+    mcu_tokens: mcu_tokens_from_info() 的输出（{{MCU_*}} 替换表）。
     """
     text = text.replace("{{PROJECT_NAME}}", project_name)
     text = text.replace("{{MCU_MODEL}}", mcu_model)
     text = text.replace("{{MDK_PROJECT}}", mdk_project)
     text = text.replace("{{TOOLKIT_PATH}}", toolkit_path)
     text = text.replace("{{KEIL_UV4}}", keil_uv4)
-    if family and family in FAMILY_META:
-        for token, val in FAMILY_META[family].items():
+    if mcu_tokens:
+        for token, val in mcu_tokens.items():
             text = text.replace(token, val)
     return text
-
-
-def infer_template(mcu_model: str) -> str:
-    """MCU 型号含 'F3' → f3xx_digital_power，否则 f1xx_general。"""
-    if mcu_model and "F3" in mcu_model.upper():
-        return F3_TEMPLATE
-    return F1_TEMPLATE
 
 
 def template_io_files(template: str):
     """按模板返回 src/inc 差异文件名（it.c, conf.h）。"""
     if template == F3_TEMPLATE:
         return "stm32f3xx_it.c", "stm32f3xx_conf.h"
+    if template == F4_TEMPLATE:
+        return "stm32f4xx_it.c", "stm32f4xx_conf.h"
     return "stm32f10x_it.c", "stm32f10x_conf.h"
 
 
@@ -198,24 +233,33 @@ def render_to_file(src: Path, dst: Path, **kwargs) -> bool:
 
 # ===================== 生成逻辑 =====================
 def generate_full_skeleton(target: Path, project_name: str, mcu_model: str,
-                           template: str, mdk_project: str, do_hooks: bool):
-    """生成完整工程骨架，返回创建的文件列表。"""
+                           template: str, mdk_project: str, do_hooks: bool,
+                           mcu_tokens: dict, full: bool = True) -> list:
+    """生成工程骨架。
+
+    full=True：含 src/inc/MDK-ARM（SPL 移植文件，需 template）。
+    full=False：config-only，只生成 CLAUDE.md / hardware.yaml / .claude/*。
+    返回创建的文件列表。
+    """
     created = []
-    it_c, conf_h = template_io_files(template)
 
     files = [
         (TEMPLATES_DIR / "CLAUDE.md.template",    target / "CLAUDE.md"),
         (TEMPLATES_DIR / "hardware.yaml.blank",   target / "hardware.yaml"),
-        (TEMPLATES_DIR / "src" / "main.c",        target / "src" / "main.c"),
-        (TEMPLATES_DIR / "src" / it_c,            target / "src" / it_c),
-        (TEMPLATES_DIR / "inc" / "main.h",        target / "inc" / "main.h"),
-        (TEMPLATES_DIR / "inc" / conf_h,          target / "inc" / conf_h),
-        (TEMPLATES_DIR / "MDK-ARM" / "README.md", target / "MDK-ARM" / "README.md"),
     ]
+    if full and template:
+        it_c, conf_h = template_io_files(template)
+        files += [
+            (TEMPLATES_DIR / "src" / "main.c",        target / "src" / "main.c"),
+            (TEMPLATES_DIR / "src" / it_c,            target / "src" / it_c),
+            (TEMPLATES_DIR / "inc" / "main.h",        target / "inc" / "main.h"),
+            (TEMPLATES_DIR / "inc" / conf_h,          target / "inc" / conf_h),
+            (TEMPLATES_DIR / "MDK-ARM" / "README.md", target / "MDK-ARM" / "README.md"),
+        ]
+
     for src, dst in files:
-        kwargs = dict(project_name=project_name, mcu_model=mcu_model, mdk_project=mdk_project)
-        if src.name.startswith("hardware.yaml"):
-            kwargs["family"] = template  # mcu 块按 F1/F3 家族填充
+        kwargs = dict(project_name=project_name, mcu_model=mcu_model,
+                      mdk_project=mdk_project, mcu_tokens=mcu_tokens)
         if render_to_file(src, dst, **kwargs):
             created.append(dst)
 
@@ -223,21 +267,21 @@ def generate_full_skeleton(target: Path, project_name: str, mcu_model: str,
         dst = target / ".claude" / "memory" / mem
         if render_to_file(TEMPLATES_DIR / "memory" / mem, dst,
                           project_name=project_name, mcu_model=mcu_model,
-                          mdk_project=mdk_project):
+                          mdk_project=mdk_project, mcu_tokens=mcu_tokens):
             created.append(dst)
 
     if do_hooks:
         dst = target / ".claude" / "settings.json"
         if render_to_file(TEMPLATES_DIR / "settings.json.template", dst,
                           project_name=project_name, mcu_model=mcu_model,
-                          mdk_project=mdk_project):
+                          mdk_project=mdk_project, mcu_tokens=mcu_tokens):
             created.append(dst)
 
     return created
 
 
 def install_existing_layer(target: Path, project_name: str, mcu_model: str,
-                           mdk_project: str, do_hooks: bool, template: str = F1_TEMPLATE):
+                           mdk_project: str, do_hooks: bool, mcu_tokens: dict) -> list:
     """给已有 Keil 工程补装 AI 辅助层，返回创建/更新的文件列表。"""
     touched = []
 
@@ -247,7 +291,8 @@ def install_existing_layer(target: Path, project_name: str, mcu_model: str,
     if claude_src.exists():
         claude_dst.parent.mkdir(parents=True, exist_ok=True)
         text = render(claude_src.read_text(encoding="utf-8"),
-                      project_name=project_name, mcu_model=mcu_model, mdk_project=mdk_project)
+                      project_name=project_name, mcu_model=mcu_model, mdk_project=mdk_project,
+                      mcu_tokens=mcu_tokens)
         claude_dst.write_text(text, encoding="utf-8")
         touched.append(claude_dst)
     else:
@@ -258,14 +303,14 @@ def install_existing_layer(target: Path, project_name: str, mcu_model: str,
         dst = target / ".claude" / "memory" / mem
         if render_to_file(TEMPLATES_DIR / "memory" / mem, dst,
                           project_name=project_name, mcu_model=mcu_model,
-                          mdk_project=mdk_project):
+                          mdk_project=mdk_project, mcu_tokens=mcu_tokens):
             touched.append(dst)
 
-    # hardware.yaml：不存在才生成（mcu 块按 F1/F3 家族填充）
+    # hardware.yaml：不存在才生成（mcu 块按解析出的规格填充）
     hw_dst = target / "hardware.yaml"
     if render_to_file(TEMPLATES_DIR / "hardware.yaml.blank", hw_dst,
                       project_name=project_name, mcu_model=mcu_model, mdk_project=mdk_project,
-                      family=template):
+                      mcu_tokens=mcu_tokens):
         touched.append(hw_dst)
 
     # settings.json：生成/更新（覆盖，TOOLKIT_PATH 可能变化）
@@ -275,7 +320,8 @@ def install_existing_layer(target: Path, project_name: str, mcu_model: str,
         if settings_src.exists():
             settings_dst.parent.mkdir(parents=True, exist_ok=True)
             text = render(settings_src.read_text(encoding="utf-8"),
-                          project_name=project_name, mcu_model=mcu_model, mdk_project=mdk_project)
+                          project_name=project_name, mcu_model=mcu_model, mdk_project=mdk_project,
+                          mcu_tokens=mcu_tokens)
             settings_dst.write_text(text, encoding="utf-8")
             touched.append(settings_dst)
         else:
@@ -353,10 +399,24 @@ def do_git_init(target: Path) -> None:
         warn(f"git init 未成功: {result.combined.strip() or result.error}")
 
 
-def print_next_steps(target: Path, template: str) -> None:
-    it_c, _ = template_io_files(template)
+def print_next_steps(target: Path, template: str, mcu_info: dict = None) -> None:
     print()
     info("=" * 58)
+    if template is None:
+        # config-only 骨架
+        if mcu_info and mcu_info["spl"] is False:
+            info("下一步（非 SPL 家族，建议 CubeMX/HAL 生成）：")
+            info(f"  1. STM32CubeMX 配置 {mcu_info['model']} 并生成工程到 {target}/")
+            info("  2. 生成后补装 AI 辅助层:")
+            info(f"     python install.py --project {target}")
+            info("     （补装 CLAUDE.md / hooks / hardware.yaml，规格已按型号填好）")
+        else:
+            info("下一步（config-only 骨架，无 SPL 移植文件）：")
+            info(f"  1. 用 STM32CubeMX 生成 {target}/ 下工程（Core/Drivers/MDK-ARM）")
+            info(f"  2. 生成后补装 AI 辅助层: python install.py --project {target}")
+        info("=" * 58)
+        return
+    it_c, _ = template_io_files(template)
     info("下一步：")
     info(f"  1. 用 Keil 向导 / CubeMX 在 {target}/MDK-ARM 生成 .uvprojx 工程")
     info(f"  2. 加入源文件: src/main.c、src/{it_c}、ST 库 system 文件，Include Paths 加 inc/")
@@ -369,14 +429,19 @@ def print_next_steps(target: Path, template: str) -> None:
 def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         prog="new_project.py",
-        description="STM32 工程脚手架：生成新工程骨架，或给已有 Keil 工程补装 AI 辅助层",
+        description="STM32 工程脚手架：按型号生成新工程骨架，或给已有 Keil 工程补装 AI 辅助层",
         epilog="示例: python new_project.py --name meter --mcu STM32F103C8T6 --yes",
     )
     ap.add_argument("--name", help=f"项目名（默认 {DEFAULT_NAME}）")
-    ap.add_argument("--mcu", help="MCU 型号，如 STM32F103C8T6 / STM32F334C8T6")
+    ap.add_argument("--mcu", help="MCU 完整型号，如 STM32F103CBT6 / STM32F334C8T6 / STM32G431CBT6")
     ap.add_argument("--dir", help="目标目录（默认 ./<项目名>）")
-    ap.add_argument("--template", choices=[F1_TEMPLATE, F3_TEMPLATE],
-                    help=f"模板（默认按 MCU 推断：含 F3 用 {F3_TEMPLATE}，否则 {F1_TEMPLATE}）")
+    ap.add_argument("--template", choices=[F1_TEMPLATE, F3_TEMPLATE, F4_TEMPLATE],
+                    help=f"模板（默认按 MCU 家族推断：F1→{F1_TEMPLATE}，F3→{F3_TEMPLATE}，"
+                         f"F4/F2→{F4_TEMPLATE}；F0/L1/非 SPL → config-only）")
+    ap.add_argument("--query-mcu", metavar="MODEL",
+                    help="只打印型号解析规格，不建工程（/newproject 对话预览确认用）")
+    ap.add_argument("--json", action="store_true",
+                    help="与 --query-mcu 搭配：JSON 输出（纯 ASCII，给 Claude 解析）")
     ap.add_argument("--no-git", action="store_true", help="不执行 git init")
     ap.add_argument("--no-hooks", action="store_true",
                     help="不生成 .claude/settings.json（CLAUDE.md 与 memory 照常）")
@@ -393,6 +458,14 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     auto = args.yes or not sys.stdin.isatty()
     p = Prompter(auto)
+
+    if args.query_mcu:
+        mcu_info = mcu_knowledge.parse_model(args.query_mcu)
+        if args.json:
+            print(json.dumps(mcu_info, ensure_ascii=True, indent=2))
+        else:
+            print(mcu_knowledge.human(mcu_info))
+        return 0
 
     project_name = args.name or p.ask("项目名", DEFAULT_NAME)
     mdk_project = project_name  # Keil 工程名默认取项目名
@@ -428,7 +501,16 @@ def main(argv=None) -> int:
         mcu_model = args.mcu or p.ask("MCU 型号", DEFAULT_MCU)
         target = Path(args.dir) if args.dir else Path(p.ask("目标目录", f"./{project_name}"))
 
-    template = args.template or infer_template(mcu_model)
+    mcu_info = mcu_knowledge.parse_model(mcu_model)
+    template = args.template if args.template else select_template(mcu_info)
+    mcu_tokens = mcu_tokens_from_info(mcu_info)
+    config_only = template is None
+
+    if mcu_info["missing"]:
+        warn(f"型号 {mcu_model} 有字段缺失: {', '.join(mcu_info['missing']) or '格式'}，"
+             "缺失项将填 TBD，请用 --query-mcu 确认或修正型号")
+    if mcu_info["spl"] is False:
+        info(f"{mcu_info['family']} 无标准外设库(SPL)，建议 CubeMX/HAL 生成（本骨架为 config-only）")
 
     do_git = not args.no_git
     do_hooks = not args.no_hooks
@@ -438,13 +520,16 @@ def main(argv=None) -> int:
         if not args.no_hooks:
             do_hooks = p.ask_yesno("生成 hooks(.claude/settings.json)", default=True)
 
-    info(f"项目: {project_name} | MCU: {mcu_model} | 模板: {template} | 目录: {target}")
+    if config_only:
+        info(f"项目: {project_name} | MCU: {mcu_model} | config-only 骨架 | 目录: {target}")
+    else:
+        info(f"项目: {project_name} | MCU: {mcu_model} | 模板: {template} | 目录: {target}")
 
     if args.existing:
         if not target.exists():
             warn(f"目标目录不存在（--existing 模式应指向已有 Keil 工程）: {target}")
-        created = install_existing_layer(target, project_name, mcu_model, mdk_project, do_hooks,
-                                         template)
+        created = install_existing_layer(target, project_name, mcu_model, mdk_project,
+                                         do_hooks, mcu_tokens)
     else:
         if target.exists():
             if not target.is_dir():
@@ -457,7 +542,8 @@ def main(argv=None) -> int:
                     return 1
         target.mkdir(parents=True, exist_ok=True)
         created = generate_full_skeleton(target, project_name, mcu_model, template,
-                                         mdk_project, do_hooks)
+                                         mdk_project, do_hooks, mcu_tokens,
+                                         full=not config_only)
 
     if created:
         ok(f"已生成/更新 {len(created)} 个文件:")
@@ -469,7 +555,7 @@ def main(argv=None) -> int:
     if do_git:
         do_git_init(target)
 
-    print_next_steps(target, template)
+    print_next_steps(target, template, mcu_info)
     return 0
 
 

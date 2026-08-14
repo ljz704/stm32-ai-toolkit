@@ -53,6 +53,18 @@
   → 新增 {{MCU_CORE/RAM/FLASH/FPU/STARTUP}} 按模板填充；实测 F334=16KB/M4F/FPU/startup_stm32f334x8.s
 - 阶段 1.4 `backup.py --dry-run` 预览、3.5 `finalize_session_log` 落盘：验证通过
 
+**✅ 2026-08-14 型号知识库 + 对话式新建工程（已完成，待 1.8 验收清单勾选）：**
+- 新增 `mcu_knowledge.py`：完整型号解析（F1/F3/F4/G4/H7/L4…）→ 核心/FPU/主频/引脚/Flash/RAM/启动文件
+  - 密度→Flash 通用规则（4=16K…I=2M）；RAM 按家族/产品线查表（查不到→missing 不崩）
+  - 启动文件按密度/产品线（F1 的 cl/md/hd/xl、F3 的 f334x8、F4 的 f407xx 等）
+  - `--query <型号> --json`（纯 ASCII，规避 GBK 乱码）；`--list-families`
+  - 实测 8+ 型号：C8T6/CBT6/ZET6/F334/F407/G431(无 SPL)/H743(2M)/乱型号
+- `new_project.py` 重写 MCU 处理：模板按家族自动选（F1/F3/F4+F2），F0/L1 与全部非 SPL → **config-only 骨架**
+  - hardware.yaml mcu 块全动态（+max_freq/package/pins/density/family_label/spl_support）
+  - 新增 `--query-mcu`（预览规格）；非 SPL 家族提示转 CubeMX/HAL
+  - 实测 F103CBT6/F334C8T6/F407ZGT6/G431CBT6/H743ZIT6 + `--existing` 回归
+- 新增 F4 模板 `stm32f4xx_it.c` / `stm32f4xx_conf.h`；`/newproject` 重写为对话提问流
+
 ---
 
 ## 阶段 0：前置检查（2 分钟）
@@ -160,6 +172,37 @@ python install.py --project C:\你的\已有Keil工程
 - [x] 只补 `.claude/`（CLAUDE.md / settings.json / memory / hardware.yaml），**不创建** src/inc/MDK-ARM
 - [x] 原有工程文件零改动
 
+### 1.8 型号知识库 / 多家族脚手架（mcu_knowledge.py + new_project.py）
+
+**型号解析单测（不建工程）：**
+
+```bash
+python mcu_knowledge.py --query STM32F103C8T6 --json    # → 64K / 20K / M3 / startup_md / 48脚
+python mcu_knowledge.py --query STM32F103CBT6 --json    # → 128K（C8 之外的第二密度）
+python mcu_knowledge.py --query STM32F103ZET6 --json    # → 512K / 64K / startup_hd
+python mcu_knowledge.py --query STM32F334C8T6 --json    # → 16K / M4F / startup_f334x8
+python mcu_knowledge.py --query STM32F407ZGT6 --json    # → 1M / 192K / 168MHz / startup_f407xx
+python mcu_knowledge.py --query STM32G431CBT6 --json    # → spl=false（无 SPL），128K/32K，missing 不含 startup
+python mcu_knowledge.py --query STM32H743ZIT6 --json    # → 2M / 992K / 480MHz / spl=false
+python mcu_knowledge.py --query "不是型号" --json        # → missing 非空，不崩溃
+```
+
+**多家族脚手架：**
+
+```bash
+python new_project.py --name t1 --mcu STM32F103CBT6 --dir <tmp> --no-git --yes   # f1xx 全骨架，hw=128K/20K/pins48
+python new_project.py --name t2 --mcu STM32F334C8T6 --dir <tmp> --no-git --yes   # f3xx 全骨架，16K/M4F
+python new_project.py --name t3 --mcu STM32G431CBT6 --dir <tmp> --no-git --yes   # config-only，无 src/inc，提示 CubeMX
+python new_project.py --name t4 --mcu STM32H743ZIT6 --dir <tmp> --no-git --yes   # config-only，480MHz/2M
+```
+
+**通过标准：**
+- [ ] 各型号 `hardware.yaml` mcu 块核心/FPU/主频/Flash/RAM/引脚数/启动文件与数据手册一致（CBT6=128K、G431=32K、H743=992K）
+- [ ] F1/F3/F4 生成 src/inc/MDK-ARM 全套 + 对应 it.c/conf.h；G4/H7 只生成 7 个 config 文件（无 src/inc）
+- [ ] 非 SPL 家族输出「无标准外设库(SPL)，建议 CubeMX/HAL 生成」提示
+- [ ] `new_project.py --query-mcu STM32F103CBT6 --json` 输出与 mcu_knowledge 一致
+- [ ] `/newproject` 对话流：问型号 → 展示规格确认 → 选生成方式 → 产出工程
+
 ---
 
 ## 阶段 2：MCP 注册验证（2 分钟）
@@ -244,7 +287,7 @@ claude mcp get stm32-toolkit
 
 ## 阶段 5：收尾
 
-- [ ] `cd C:\Users\lqt\Desktop\test\stm32-ai-toolkit && python -m py_compile _cmdutil.py install.py uninstall.py backup.py new_project.py mcp/stm32_mcp_server.py scripts/serial_live.py scripts/hooks/*.py` → 无报错
+- [ ] `cd C:\Users\lqt\Desktop\test\stm32-ai-toolkit && python -m py_compile _cmdutil.py install.py uninstall.py backup.py new_project.py mcu_knowledge.py mcp/stm32_mcp_server.py scripts/serial_live.py scripts/hooks/*.py` → 无报错
 - [ ] 卸载测试用的 demo_f1 / demo_f3 目录（或保留作样例）。**删除时 Explorer 可能提示"需要管理员权限"——这是含 `.git` 隐藏目录的已知怪癖，直接命令行删即可，不需要管理员**：
       ```bash
       rm -rf C:\Users\lqt\Desktop\test\demo_f1   # Git Bash

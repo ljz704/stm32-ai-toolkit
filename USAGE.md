@@ -27,14 +27,28 @@ ls %USERPROFILE%\.claude\commands\   # 6 个命令
 ### 1. 新建工程
 
 ```bash
-python new_project.py --name meter --mcu STM32F103C8T6 --yes
+python new_project.py --name meter --mcu STM32F103CBT6 --yes
 # 或对已有 Keil 工程只补装 AI 层：
 python new_project.py --dir <已有工程> --existing --yes
+# 只解析型号、预览规格（不建工程，/newproject 对话里用于确认）：
+python new_project.py --query-mcu STM32G431CBT6 --json
 ```
 
 生成的内容：`CLAUDE.md`（含 `@.claude/memory/*.md` 自动加载）、`.claude/settings.json`（hooks）、`.claude/memory/`（架构/引脚/坑记录/会话日志）、`hardware.yaml`、`src/`、`inc/`。
 
-> MCU 含 `F3` 自动用 f3xx 模板（it.c/conf.h），否则 f1xx。F334 的引脚/内存信息已按数据手册校正。
+**型号知识库（mcu_knowledge.py）自动解析**：`--mcu` 给完整型号即可，核心/FPU/最高主频/Flash/RAM/引脚数/启动文件会按型号精确填充进 `hardware.yaml` 与 `CLAUDE.md`，不再默认 C8T6。
+
+- **模板按家族自动选**：F1→`f1xx_general`、F3→`f3xx_digital_power`、F4/F2→`f4xx_spl`（新增 stm32f4xx_it.c/conf.h）。
+- **config-only 骨架**：F0/L1（SPL 但无专用模板）与全部**非 SPL 家族**（F7/G0/G4/H7/L4/L5/U5/WB）只生成 CLAUDE.md/.claude/hardware.yaml，不生成 src/inc 移植文件；非 SPL 家族会提示转 CubeMX/HAL。
+- 型号解析不出/查不到 → 缺失项标 `TBD` 并告警，配合 `/newproject` 对话确认流程兜底。
+
+独立查询型号规格：
+
+```bash
+python mcu_knowledge.py --query STM32F103CBT6        # 人类可读
+python mcu_knowledge.py --query STM32F103CBT6 --json # 纯 ASCII JSON（给 Claude 解析）
+python mcu_knowledge.py --list-families              # 家族核心/FPU/SPL 支持一览
+```
 
 ### 2. Claude Code 斜杠命令
 
@@ -45,7 +59,7 @@ python new_project.py --dir <已有工程> --existing --yes
 | `/serial` | 列出串口并实时监控（serial_live.py） |
 | `/review` | 用代码审查 Skill 审查当前代码 |
 | `/newissue` | 记录一个踩坑/经验到 known_issues.md |
-| `/newproject` | 调 new_project.py 新建工程（`$ARGUMENTS` 传 `--name <名字> --mcu <型号>`） |
+| `/newproject` | 对话式新建工程：先问项目名 + **完整芯片型号** → 解析规格给用户确认 → 选 SPL 骨架或 CubeMX 生成 |
 
 ### 3. MCP 工具（Claude 自动调用）
 

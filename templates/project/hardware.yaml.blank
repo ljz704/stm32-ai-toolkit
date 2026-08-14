@@ -10,12 +10,17 @@ project:
 
 mcu:
   model: "{{MCU_MODEL}}"
-  core: "{{MCU_CORE}}"           # F1xx: Cortex-M3；F3xx: Cortex-M4F（自动按模板填充）
-  max_freq_mhz: 72
-  flash_kb: {{MCU_FLASH_KB}}     # 按具体型号填写（C8=64KB）
-  ram_kb: {{MCU_RAM_KB}}         # F103C8=20KB；F334C8=16KB（12KB 常规 + 4KB CCM）
-  has_fpu: {{MCU_HAS_FPU}}       # F3xx 为 true
-  startup_file: "{{MCU_STARTUP}}"   # F3xx: startup_stm32f334x8.s
+  family: "{{MCU_FAMILY_LABEL}}"     # 如 STM32F1 / STM32F3 / STM32F4 / STM32G4（型号知识库自动填充）
+  core: "{{MCU_CORE}}"               # F1: Cortex-M3；F3/F4/G4: Cortex-M4F；H7: Cortex-M7
+  max_freq_mhz: {{MCU_MAX_FREQ}}     # F1/F3: 72；F4: 168；G4: 170；H7: 480
+  flash_kb: {{MCU_FLASH_KB}}         # 按具体型号（C8=64KB；CBT6=128KB）
+  ram_kb: {{MCU_RAM_KB}}             # F103C8=20KB；F334C8=16KB（12K 常规+4K CCM）；G431=32KB
+  has_fpu: {{MCU_HAS_FPU}}           # F3/F4/G4/H7 为 true
+  package: "{{MCU_PACKAGE}}"         # 封装字母：C=48 脚
+  pins: {{MCU_PINS}}                 # 引脚数：C=48；R=64；Z=144
+  density: "{{MCU_DENSITY}}"         # 密度字母：8=64K；B=128K
+  startup_file: "{{MCU_STARTUP}}"    # SPL: f10x/f3xx/f4xx；非 SPL 家族为 N/A（走 HAL/CubeMX）
+  spl_support: {{MCU_SPL}}           # true=可建 SPL 骨架；false=建议 CubeMX/HAL 生成
 
 clock:
   hse_mhz: 8

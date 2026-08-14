@@ -18,7 +18,8 @@ stm32-ai-toolkit/
 ├── install.py                    ← 双击运行，一键安装/恢复
 ├── uninstall.py                  ← 一键卸载（默认移到备份，--purge 彻底清理）
 ├── backup.py                     ← 把 ~/.claude 的配置同步回本包（备份）
-├── new_project.py                ← 新工程脚手架（可用 /newproject 调用）
+├── new_project.py                ← 新工程脚手架（可用 /newproject 对话式调用）
+├── mcu_knowledge.py              ← STM32 型号知识库（解析型号→核心/内存/启动文件，/newproject 预览用）
 ├── README.md                     ← 本文件
 ├── global_claude.md              ← 你的全局开发规范（装到 ~/.claude/CLAUDE.md）
 ├── _cmdutil.py                   ← 脚本共用模块（编码/子进程封装）

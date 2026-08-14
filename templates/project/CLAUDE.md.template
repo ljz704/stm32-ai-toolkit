@@ -5,7 +5,8 @@
 
 ## 项目信息
 - 项目名称：{{PROJECT_NAME}}
-- MCU 型号：{{MCU_MODEL}}
+- MCU 型号：{{MCU_MODEL}}（{{MCU_FAMILY_LABEL}} · {{MCU_CORE}} · {{MCU_PINS}} 引脚 · Flash {{MCU_FLASH_KB}}KB / RAM {{MCU_RAM_KB}}KB）
+- 库类型：{{MCU_SPL_TEXT}}
 - 核心功能：（待补充）
 
 ## 记忆文件（自动导入，勿删）
