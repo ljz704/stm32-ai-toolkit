@@ -57,9 +57,17 @@ STM32_TOOLKIT_ENV=dsh python new_project.py --name meter --mcu STM32F103CBT6 --y
 - 同一目录内同时存在两轨记忆文件时各自独立维护，互不覆盖。
 
 **CubeMX 优先（默认）**：不传 `--template` 时，任何型号都自动执行——
-1. `make_ioc.py`：型号 → 最小 `.ioc`（RCC 时钟块取自已装固件包的官方示例，老家族 F0/F1/L1 用内置模板；`--hse-mhz` 指定板载晶振，默认 8MHz——仅对有官方示例的家族生效，F1/F0/L1 内置模板走 HSI 时钟、`--hse-mhz` 非 8 时告警提示在 CubeMX GUI 配晶振）；
+0. **用户模板库（最高优先级）**：`templates/ioc_templates/<家族>/<型号>/<型号>.ioc`
+   （如 `F1/STM32F103C8T6/STM32F103C8T6.ioc`）是你用 CubeMX GUI 手配的金标准模板，
+   **精确型号命中 → 整文件复用**（时钟/引脚/外设按模板原样，不再拼最小骨架）；
+   未命中才进下面的官方示例/内置兜底。型号解析已容错 `TR` 订货后缀
+   （`STM32F103C8T6TR` 按 `STM32F103C8T6` 解析，带 TR 的订货号同样命中模板）；
+1. `make_ioc.py`：型号 → `.ioc`（用户模板未命中时，RCC 时钟块取自已装固件包的官方示例，老家族 F0/F1/L1 用内置模板；`--hse-mhz` 指定板载晶振，默认 8MHz——仅对有官方示例的家族生效，F1/F0/L1 内置模板走 HSI 时钟、`--hse-mhz` 非 8 时告警提示在 CubeMX GUI 配晶振）；
 2. `cubemx_gen.py` 无头生成完整 HAL 工程（`Core/` `Drivers/` `MDK-ARM/<名>.uvprojx`），直接落进目标目录；
 3. 自动补装 AI 辅助层（CLAUDE.md / hardware.yaml / .claude/）。
+
+新增模板：用 CubeMX GUI 打开 → 配好时钟/引脚/外设 → 另存为
+`templates/ioc_templates/<家族>/<型号>/<型号>.ioc`（`make_ioc.py --json` 会报告是否命中）。
 
 生成约 20s~3 分钟（含 CubeMX 启动）。**缺对应家族固件包**（如 FW_G4）时会先给 config-only 骨架并提示安装，装好重跑即补全。
 

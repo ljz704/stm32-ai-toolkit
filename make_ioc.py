@@ -246,6 +246,53 @@ def parse_ioc_meta(ioc_path: Path) -> dict:
     return meta
 
 
+# ===================== 用户模板库（最高优先级） =====================
+IOC_TEMPLATES_DIR = SCRIPT_DIR / "templates" / "ioc_templates"
+
+
+def find_user_template(fields: dict):
+    """在 templates/ioc_templates/ 里精确匹配用户手配模板（最高优先级）。
+
+    结构 <家族>/<型号>/<型号>.ioc（如 F1/STM32F103C8T6/STM32F103C8T6.ioc）；
+    兼容 <型号>/<型号>.ioc 与 <型号>.ioc 两种布局。**精确型号整文件复用**——
+    不做跨型号/跨密度/跨封装改写（.ioc 的 Mcu.Name/引脚块是型号特定的）。
+    返回 Path 或 None。
+    """
+    model, family = fields.get("model"), fields.get("family")
+    if not model or not family:
+        return None
+    base = IOC_TEMPLATES_DIR
+    for cand in (
+        base / family / model / f"{model}.ioc",
+        base / model / f"{model}.ioc",
+        base / f"{model}.ioc",
+    ):
+        if cand.is_file():
+            return cand
+    return None
+
+
+def reuse_user_template(tpl: Path, project_name: str) -> str:
+    """整文件复用用户模板：只把工程名对齐到输出文件名，其余（时钟/引脚/外设）原样保留。"""
+    text = tpl.read_text(encoding="utf-8", errors="replace")
+    text = re.sub(r"(?m)^ProjectManager\.ProjectFileName=.*$",
+                  f"ProjectManager.ProjectFileName={project_name}.ioc", text)
+    text = re.sub(r"(?m)^ProjectManager\.ProjectName=.*$",
+                  f"ProjectManager.ProjectName={project_name}", text)
+    return text
+
+
+def _ioc_meta_line(tpl: Path, key: str) -> str:
+    """读用户模板里的单行元信息（如 Mcu.Name / Mcu.Package）。读不到返回空串。"""
+    try:
+        for ln in tpl.read_text(encoding="utf-8", errors="replace").splitlines():
+            if ln.startswith(key + "="):
+                return ln.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
 def find_example_ioc(fw_dir: Path, fields: dict):
     """在固件包 Projects/ 里找"最接近"目标型号的官方示例 .ioc。
 
@@ -373,6 +420,20 @@ def make_ioc(model: str, project_name: str = "project", hse_hz: int = 8_000_000)
         err(result["error"])
         return result
     result["fw"] = str(installed)
+
+    # ---- 用户模板库（最高优先级）：精确型号命中 → 整文件复用 ----
+    # 时钟/引脚/外设按模板原样保留，不再拼最小骨架。固件包检查仍须先过
+    # （CubeMX 生成时要用）。
+    user_tpl = find_user_template(fields)
+    if user_tpl:
+        result["rcc_source"] = f"用户模板（{fields['model']}，整文件复用）"
+        result["clock_note"] = "用户模板：时钟/引脚/外设按模板原样保留，可在 CubeMX GUI 调整"
+        result["user_template"] = str(user_tpl)
+        result["mcu_name"] = _ioc_meta_line(user_tpl, "Mcu.Name") or fields["model"]
+        result["package_name"] = _ioc_meta_line(user_tpl, "Mcu.Package") or fields.get("package", "")
+        result["ioc"] = reuse_user_template(user_tpl, project_name or "project")
+        result["ok"] = True
+        return result
 
     db_dir = Path(exe).parent / "db" / "mcu"
     range_info = db_range_name(fields, db_dir) if db_dir.exists() else None

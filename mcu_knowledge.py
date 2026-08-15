@@ -201,12 +201,18 @@ FAMILY_KEYS = sorted([
 
 
 def normalize_model(model: str) -> str:
-    """去空白、转大写；缺 STM32 前缀自动补。"""
+    """去空白、转大写；缺 STM32 前缀自动补；剥离 TR 订货后缀。"""
     s = (model or "").strip().upper()
     if not s:
         return ""
     if not s.startswith("STM32"):
         s = "STM32" + s
+    # TR（Tape & Reel 卷带）是订购后缀，不是型号主体：
+    # STM32F103C8T6TR → STM32F103C8T6。合法型号主体以等级数字/变体字母
+    # （6/7/3/6B）结尾，故 strip 尾部 TR 安全，且让带 TR 的完整订货号
+    # 也能命中 ioc 模板库（模板文件用主体命名）。
+    if s.endswith("TR"):
+        s = s[:-2]
     return s
 
 
@@ -214,7 +220,8 @@ def split_model(model: str) -> dict:
     """型号拆解（权威实现，双字母家族 WB/WL/WBA/N6 等也支持）。
 
     家族用 FAMILY_KEYS 最长前缀匹配；型号结构：
-    STM32 + 家族 + 数字串(numeric) + 封装字母 + 密度 + 温度 + 等级。
+    STM32 + 家族 + 数字串(numeric) + 封装引脚字母 + 密度 + 封装类型字母 + 等级数字
+    [+ 变体字母后缀]。变体如 F100 的 `B`（STM32F100C4T6B）、TR 已在 normalize 剥掉。
     返回 {family, series, line, numeric, package, density, temp, grade}；
     拆不出返回 {}（不抛异常）。
     parse_model 与 make_ioc.mcu_fields 共用本函数，避免两处正则漂移。
@@ -227,7 +234,8 @@ def split_model(model: str) -> dict:
     if not family:
         return {}
     rest = body[len(family):]
-    m = re.match(r"^(\d+)([A-Z])([0-9A-Z])([A-Z])(\d)?$", rest)
+    # 尾组 (\d[A-Z]*)：等级数字开头，可带变体字母（F100 的 "6B"）；整体可缺。
+    m = re.match(r"^(\d+)([A-Z])([0-9A-Z])([A-Z])(\d[A-Z]*)?$", rest)
     if not m:
         return {}
     numeric, package, density, temp, grade = m.groups()
@@ -248,6 +256,7 @@ def split_model(model: str) -> dict:
 
 def parse_model(model: str) -> dict:
     """解析完整型号 → 结构化规格。解析不出/查不到的不崩溃，返回 missing 列表。"""
+    original = (model or "").strip().upper()   # 保留原始输入（检测 TR 订货后缀）
     model = normalize_model(model)
     result = {
         "model": model,
@@ -322,6 +331,10 @@ def parse_model(model: str) -> dict:
         result["missing"].append("startup")
     if not result["missing"]:
         result["missing"] = []
+
+    # 输入带 TR 订货后缀时提示已剥离（如 STM32F103C8T6TR → 按 STM32F103C8T6 解析）
+    if original.endswith("TR"):
+        result["note"] = (result["note"] + "；已剥离 TR 订货后缀").strip("；")
 
     return result
 

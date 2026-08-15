@@ -88,6 +88,44 @@ def collect_dsh_artifacts():
     return items
 
 
+def _dsh_runtime_unmount_mcp():
+    """通知运行中的 DSH 卸载 stm32-toolkit MCP（魔改插件 dsh-host-files 的 API）。
+
+    文件层面的卸载（移除 mcp-servers.json）只保证重启后生效；运行中的 DSH 进程
+    在启动时已把注册表读入内存并动态挂载。若 DSH 正在运行（默认端口 3080），
+    调用 /vscode-files/mcp/delete 让它立即解除挂载，设置界面即刻消失。
+    DSH 未运行 / 未装魔改插件 / 接口不可用时静默跳过（文件已移除，重启后自然干净）。
+    """
+    try:
+        import urllib.request
+        import json as _json
+        # 探测 DSH 是否在运行（魔改插件路由存在性检查）
+        req = urllib.request.Request("http://127.0.0.1:3080/vscode-files/mcp",
+                                     method="GET")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+        servers = data.get("servers") if isinstance(data, dict) else None
+        if not isinstance(servers, list):
+            info("DSH 运行中但 MCP 管理接口无 server 列表（可能未装魔改插件），跳过运行时卸载")
+            return
+        ids = [s.get("id") for s in servers if isinstance(s, dict)]
+        if MCP_SERVER_NAME not in ids:
+            info("DSH 运行中但 stm32-toolkit 未挂载，无需运行时卸载")
+            return
+        body = _json.dumps({"id": MCP_SERVER_NAME}).encode("utf-8")
+        req = urllib.request.Request("http://127.0.0.1:3080/vscode-files/mcp/delete",
+                                     data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            result = _json.loads(resp.read().decode("utf-8"))
+        if result.get("ok"):
+            ok("已通知运行中的 DSH 卸载 MCP（设置界面即刻移除）")
+        else:
+            warn(f"DSH 运行时卸载 MCP 失败: {result.get('error', 'unknown')}")
+    except Exception as e:
+        info(f"DSH 未运行或接口不可用，跳过运行时 MCP 卸载（{e}）")
+
+
 def run_uninstall_dsh(purge=False):
     """卸载 DSH 模式安装的配置（~/.dsh），移入 ~/.dsh/.stm32-toolkit-uninstalled/。"""
     bk = DSH_DIR / BACKUP_ROOT_NAME / datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -107,6 +145,9 @@ def run_uninstall_dsh(purge=False):
         warn("没有发现 DSH 模式安装的配置（可能尚未安装，或已被移除）")
     else:
         ok(f"已将 {moved} 项配置移出，备份在: {bk}")
+
+    # 运行时层面：通知运行中的 DSH 解除 MCP 挂载（文件已移走，重启后也不会再挂）
+    _dsh_runtime_unmount_mcp()
 
     if purge:
         root = DSH_DIR / BACKUP_ROOT_NAME
