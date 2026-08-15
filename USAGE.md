@@ -1,6 +1,7 @@
-# STM32 AI 开发工作流 —— 使用说明
+# STM32 AI 开发工作流 —— 使用说明（Claude Code 版）
 
 > 配套：安装/恢复看 [README.md](README.md)，设计说明看 [WORKFLOW_GUIDE_v2.md](WORKFLOW_GUIDE_v2.md)。
+> **使用 DeepSeek Harness (DSH)？** 请看 [USAGE_DSH.md](USAGE_DSH.md)（`python install.py --dsh` 一键适配）。
 
 ## 一、安装 / 恢复
 
@@ -40,6 +41,20 @@ python new_project.py --dir <已有工程> --existing --yes
 # 只解析型号、预览规格（不建工程，/newproject 对话里用于确认）：
 python new_project.py --query-mcu STM32G431CBT6 --json
 ```
+
+**AI 环境双轨（`--env`，可选）**：同一工具流可给 Claude Code 或 DSH 生成对应工程，互不干扰：
+
+```bash
+python new_project.py --name meter --mcu STM32F103CBT6 --env claude --yes   # Claude 轨：.claude/memory + hooks 默认生成
+python new_project.py --name meter --mcu STM32F103CBT6 --env dsh --yes      # DSH 轨：.dsh/memory + 无 hooks
+STM32_TOOLKIT_ENV=dsh python new_project.py --name meter --mcu STM32F103CBT6 --yes   # 也可用环境变量，省得每次带参
+```
+
+- **解析顺序**：`--env` 显式 > 环境变量 `STM32_TOOLKIT_ENV`（值 `dsh`）> 默认 `claude`。
+- **Claude 轨**（默认）：记忆文件落 `.claude/memory/`，CLAUDE.md 用 `@.claude/memory/*.md` 自动导入；`.claude/settings.json`（hooks 强制工作流）**默认生成**，可用 `--no-hooks` 关掉。
+- **DSH 轨**：记忆文件落 `.dsh/memory/`，CLAUDE.md 用显式路径引用；**默认不生成 hooks**（DSH 无 PreToolUse/PostToolUse 机制），`--hooks` 可强制生成（供该目录同时用 Claude 时使用）。
+- `--hooks` / `--no-hooks` 显式参数**始终优先**于 `--env` 的默认值。
+- 同一目录内同时存在两轨记忆文件时各自独立维护，互不覆盖。
 
 **CubeMX 优先（默认）**：不传 `--template` 时，任何型号都自动执行——
 1. `make_ioc.py`：型号 → 最小 `.ioc`（RCC 时钟块取自已装固件包的官方示例，老家族 F0/F1/L1 用内置模板；`--hse-mhz` 指定板载晶振，默认 8MHz——仅对有官方示例的家族生效，F1/F0/L1 内置模板走 HSI 时钟、`--hse-mhz` 非 8 时告警提示在 CubeMX GUI 配晶振）；
@@ -94,7 +109,7 @@ python cubemx_gen.py --ensure-fw g4.ioc              # 缺固件包时检查/提
 | 串口 | `serial_list_ports` / `serial_send` / `serial_read` / `serial_monitor_start` / `serial_monitor_read` / `serial_monitor_stop` |
 | 日志 | `parse_build_log`（含 AC5 编译器 + L62xxE 链接器错误解析） |
 
-### 4. Hooks 强制工作流（在带 `.claude/settings.json` 的工程里生效）
+### 4. Hooks 强制工作流（仅在 Claude 轨工程、带 `.claude/settings.json` 时生效）
 
 - **编辑源码**（`.c/.h/.s`）→ PostToolUse 置 `dirty=True` 并提醒"先编译验证"
 - **再次编辑前** → PreToolUse 闸门：上次编译成功但存在未验证改动时 **block**，提示先 `/build`

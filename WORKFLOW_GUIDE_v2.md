@@ -1,5 +1,11 @@
 # STM32 AI 开发工作流 v3 —— 完整优化方案
 
+> **DSH 说明**：本方案按 Claude Code 设计（hooks/斜杠命令/`@` 导入）。适配
+> DeepSeek Harness (DSH) 时：`python install.py --dsh` 一键安装到 `~/.dsh`；
+> 全局规范 → `~/.dsh/AGENTS.md`，命令 → 同名 skill，记忆文件 → `.dsh/memory/`，
+> MCP → 设置界面动态挂载。DSH 无 hooks 闸门，编译验证靠 skill 铁律。
+> 详见 [USAGE_DSH.md](USAGE_DSH.md)。
+
 ## 一、痛点 → 解决方案对照表
 
 | 痛点 | 解决方案 | 文件/工具 |

@@ -8,12 +8,14 @@ STM32 AI 工作流 —— 备份同步脚本
 
 默认方向：系统 → 工具包（备份）
 反向：   --from-toolkit  工具包 → 系统（恢复）
+DSH：    --dsh          同步 ~/.dsh（AGENTS.md ↔ dsh_global.md，skills ↔ skills/）
 
 只同步含 SKILL.md 的 skills 子目录；不碰 mcp/（server 由工具包路径直接引用）、不碰 templates/。
 
 用法:
-    python backup.py                 # 系统 → 工具包
-    python backup.py --from-toolkit  # 工具包 → 系统
+    python backup.py                 # Claude Code: 系统 → 工具包
+    python backup.py --dsh           # DSH: ~/.dsh → 工具包
+    python backup.py --from-toolkit  # 工具包 → 系统（可加 --dsh 表示推送到 ~/.dsh）
     python backup.py --dry-run       # 只预览要同步的文件，不复制
 """
 
@@ -35,6 +37,11 @@ SYSTEM_SKILLS = CLAUDE_DIR / "skills"
 SYSTEM_COMMANDS = CLAUDE_DIR / "commands"
 TK_SKILLS = SCRIPT_DIR / "skills"
 TK_COMMANDS = SCRIPT_DIR / "commands"
+
+# ── DSH（DeepSeek Harness）目标：~/.dsh ↔ 工具包 ──
+DSH_DIR = USER_HOME / ".dsh"
+DSH_AGENTS = DSH_DIR / "AGENTS.md"
+TK_DSH_GLOBAL = SCRIPT_DIR / "dsh_global.md"
 
 
 def sync_file(src: Path, dst: Path, dry_run: bool):
@@ -97,11 +104,36 @@ def main():
 
     parser = argparse.ArgumentParser(
         prog="backup.py",
-        description="备份/恢复 STM32 AI 工具包配置（CLAUDE.md / Skills / Commands）。默认系统→工具包。",
+        description="备份/恢复 STM32 AI 工具包配置（CLAUDE.md / AGENTS.md / Skills / Commands）。默认系统→工具包。",
     )
     parser.add_argument("--dry-run", action="store_true", help="只打印要同步的文件，不复制")
     parser.add_argument("--from-toolkit", action="store_true", help="反向：把工具包推送到系统")
+    parser.add_argument("--dsh", action="store_true",
+                        help="DSH 模式：同步 ~/.dsh（AGENTS.md ↔ dsh_global.md，skills ↔ skills/），不碰 ~/.claude")
     args = parser.parse_args()
+
+    if args.dsh:
+        # DSH 模式：只同步 AGENTS.md + skills，不涉及 commands（DSH 无文件式命令）
+        if args.from_toolkit:
+            direction = "工具包 → ~/.dsh"
+            src_agents, dst_agents = TK_DSH_GLOBAL, DSH_AGENTS
+            src_skills, dst_skills = TK_SKILLS, DSH_DIR / "skills"
+        else:
+            direction = "~/.dsh → 工具包"
+            src_agents, dst_agents = DSH_AGENTS, TK_DSH_GLOBAL
+            src_skills, dst_skills = DSH_DIR / "skills", TK_SKILLS
+        print(f"正在同步（DSH，{direction}）...")
+        print()
+        sync_file(src_agents, dst_agents, args.dry_run)
+        sync_skill_dirs(src_skills, dst_skills, args.dry_run)
+        print()
+        print("DSH 同步完成！建议提交到 Git 或复制到网盘备份。")
+        if sys.stdin.isatty():
+            try:
+                input("按回车键退出...")
+            except EOFError:
+                pass
+        return
 
     direction = "工具包 → 系统" if args.from_toolkit else "系统 → 工具包"
     print(f"正在同步（{direction}）...")

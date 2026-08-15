@@ -7,7 +7,7 @@ description: STM32 固件代码审查。当用户要求审查 检查 规范检�
 
 ## 审查维度
 
-### 1. 命名规范检查（对照全局 CLAUDE.md）
+### 1. 命名规范检查（对照全局指令：Claude Code 为 ~/.claude/CLAUDE.md，DSH 为 ~/.dsh/AGENTS.md）
 - [ ] 函数名：`ModuleName_ActionName()` 格式
 - [ ] 全局变量：`g_` 前缀
 - [ ] 宏定义：全大写 + 模块前缀

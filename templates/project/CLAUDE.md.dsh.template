@@ -1,0 +1,49 @@
+# {{PROJECT_NAME}} —— STM32 工程
+
+> 本文件是项目级指令入口（DSH 原生支持 AGENTS.md / CLAUDE.md 两种文件名，
+> 放在项目根目录即可被 DSH 自动加载）。完整开发规范见全局指令（~/.dsh/AGENTS.md）。
+
+## 项目信息
+- 项目名称：{{PROJECT_NAME}}
+- MCU 型号：{{MCU_MODEL}}（{{MCU_FAMILY_LABEL}} · {{MCU_CORE}} · {{MCU_PINS}} 引脚 · Flash {{MCU_FLASH_KB}}KB / RAM {{MCU_RAM_KB}}KB）
+- 库类型：{{MCU_SPL_TEXT}}
+- 核心功能：（待补充）
+
+## 记忆文件（开始相关任务前先读取，勿删）
+本工程使用 `.dsh/memory/` 目录存放记忆（DSH 风格；若目录下存在 `.claude/memory/` 为旧版兼容，同样有效）。开始任务前按需读取：
+- `.dsh/memory/architecture.md` —— 架构决策
+- `.dsh/memory/pin_usage.md` —— 引脚占用表（生成外设代码前**必须**读取）
+- `.dsh/memory/known_issues.md` —— 踩坑记录（写 ADC/HRTIM/SPI 代码前**必须**读取）
+- `.dsh/memory/session_log.md` —— 会话关键结论
+
+## 硬件概述
+> 生成外设代码前，先读取 `hardware.yaml`（引脚/外设/约束的权威来源）。
+
+- MCU：{{MCU_MODEL}}
+- 时钟：HSE 8MHz → PLL → SYSCLK 72MHz
+- 调试接口：SWD（PA13/PA14）
+- 关键外设：（待补充，登记到 hardware.yaml）
+
+## 编译 / 烧录（MCP 工具优先）
+```bash
+# Keil 命令行编译（Release 模式，MCP keil_build 等价物）
+"{{KEIL_UV4}}" -b MDK-ARM/{{MDK_PROJECT}}.uvprojx -o BuildLog.txt -j0
+```
+> DSH 中直接调用 MCP 工具：`mcp__stm32-toolkit__keil_build`（编译）、
+> `mcp__stm32-toolkit__stlink_flash`（烧录）、`mcp__stm32-toolkit__serial_*`（串口）。
+
+## 铁律（违反即返工）
+1. **每改 ≥ 5 行代码必须编译验证**（`mcp__stm32-toolkit__keil_build`），0 Error 后才能继续。
+2. **生成外设代码前必须查 `pin_usage.md`**，禁止占用已分配引脚。
+3. **写 ADC / HRTIM / SPI 代码前必须查 `known_issues.md`**。
+4. **串口数据必须先展示原始数据**（text 代码块），再给分析。
+5. 编码规范（命名 / Doxygen 注释 / 禁 malloc / ISR 禁浮点）见全局指令（~/.dsh/AGENTS.md）。
+
+## DSH 说明
+- 本工程由 stm32-ai-toolkit 工作流生成，适配 DeepSeek Harness（DSH）。
+- Skill：stm32-build-flash-debug / stm32-code-review / stm32-debug-analyze /
+  stm32-peripheral-config / stm32-new-project / stm32-known-issues 已安装，按需自动触发。
+- MCP：stm32-toolkit（15 个工具）已注册到 DSH 设置 → MCP 管理。
+- 无 hooks 闸门：改完代码主动编译验证，0 Error 后才能继续。
+
+详见全局指令 ~/.dsh/AGENTS.md

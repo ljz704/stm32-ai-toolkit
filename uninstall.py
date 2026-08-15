@@ -36,6 +36,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from install import (  # noqa: E402
     CLAUDE_DIR, COMMANDS_DIR, SKILLS_DIR, MCP_SERVER_NAME,
+    DSH_DIR, DSH_AGENTS, DSH_SKILLS_DIR, DSH_MCP_STATE,
     KNOWN_SKILLS, KNOWN_COMMANDS, ok, warn, err, info,
 )
 from _cmdutil import fix_console_encoding, run_cmd  # noqa: E402
@@ -71,6 +72,61 @@ def collect_artifacts(claude_dir=CLAUDE_DIR):
             items.append((f, f"Command: {name}"))
 
     return items
+
+
+def collect_dsh_artifacts():
+    """收集 DSH 模式（--dsh）安装到 ~/.dsh 的配置。返回 [(src, 展示名), ...]。"""
+    items = []
+    if DSH_AGENTS.exists():
+        items.append((DSH_AGENTS, "全局指令 AGENTS.md"))
+    for name in KNOWN_SKILLS:
+        d = DSH_SKILLS_DIR / name
+        if d.is_dir():
+            items.append((d, f"Skill: {name}"))
+    if DSH_MCP_STATE.exists():
+        items.append((DSH_MCP_STATE, "MCP 注册表 mcp-servers.json"))
+    return items
+
+
+def run_uninstall_dsh(purge=False):
+    """卸载 DSH 模式安装的配置（~/.dsh），移入 ~/.dsh/.stm32-toolkit-uninstalled/。"""
+    bk = DSH_DIR / BACKUP_ROOT_NAME / datetime.now().strftime("%Y%m%d_%H%M%S")
+    moved = 0
+    for src, label in collect_dsh_artifacts():
+        rel = src.relative_to(DSH_DIR)
+        dst = bk / rel
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+            ok(f"已移出 {label} → {dst}")
+            moved += 1
+        except OSError as e:
+            warn(f"移出 {label} 失败: {e}（跳过）")
+
+    if moved == 0:
+        warn("没有发现 DSH 模式安装的配置（可能尚未安装，或已被移除）")
+    else:
+        ok(f"已将 {moved} 项配置移出，备份在: {bk}")
+
+    if purge:
+        root = DSH_DIR / BACKUP_ROOT_NAME
+        if root.exists():
+            try:
+                shutil.rmtree(root)
+                ok(f"已删除 DSH 卸载备份目录: {root}")
+            except OSError as e:
+                warn(f"删除 {root} 失败: {e}")
+        install_bk = DSH_DIR / ".stm32-toolkit-backups"
+        if install_bk.exists():
+            try:
+                shutil.rmtree(install_bk)
+                ok(f"已删除 DSH 安装备份目录: {install_bk}")
+            except OSError as e:
+                warn(f"删除 {install_bk} 失败: {e}")
+
+    print()
+    info("DSH 卸载完成；重新安装: python install.py --dsh")
+    return 0
 
 
 def move_to_backup(claude_dir=CLAUDE_DIR):
@@ -204,6 +260,8 @@ def main():
         description="STM32 AI 开发工作流 —— 一键卸载。默认把配置移到备份目录（可恢复），--purge 才彻底删除。",
     )
     parser.add_argument("--yes", action="store_true", help="跳过确认")
+    parser.add_argument("--dsh", action="store_true",
+                        help="卸载 DSH 模式安装的配置（~/.dsh 的 AGENTS.md / skills / mcp-servers.json）")
     parser.add_argument("--purge", action="store_true",
                         help="卸载后删除卸载备份与 *.bak_* 备份，彻底清理（不可恢复）")
     parser.add_argument("--purge-deps", action="store_true",
@@ -217,7 +275,8 @@ def main():
 
     if not args.yes:
         try:
-            ans = input("确认卸载？将移除全局 CLAUDE.md、4 个 Skill、6 个命令及 MCP 注册。 [y/N] ")
+            target_desc = "DSH 配置（AGENTS.md、6 个 Skill、MCP 注册）" if args.dsh else "全局 CLAUDE.md、4/6 个 Skill、6 个命令及 MCP 注册"
+            ans = input(f"确认卸载？将移除{target_desc}。 [y/N] ")
         except EOFError:
             ans = ""
         if ans.strip().lower() not in ("y", "yes"):
@@ -226,6 +285,9 @@ def main():
 
     if args.purge:
         warn("--purge 会删除所有备份（包括你可能想保留的旧配置），不可恢复！")
+
+    if args.dsh:
+        return run_uninstall_dsh(purge=args.purge)
 
     return run_uninstall(purge=args.purge, purge_deps=args.purge_deps)
 

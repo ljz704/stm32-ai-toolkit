@@ -15,7 +15,7 @@ description: STM32/Keil 工程编译-烧录-验证闭环。当用户要求编译
 ### Step 1：定位工程
 1. 扫描当前目录及子目录，查找 `.uvprojx` 文件
 2. 如果找到多个，列出供用户选择；如果只有一个，直接使用
-3. 确认工程路径后，读取同目录下的 `CLAUDE.md` 和 `.claude/memory/known_issues.md`
+3. 确认工程路径后，读取同目录下的 `CLAUDE.md`（DSH 亦支持 AGENTS.md）和记忆文件 `.dsh/memory/known_issues.md`（旧工程可能是 `.claude/memory/known_issues.md`，同样有效）
 
 ### Step 2：编译（Build）
 1. 调用 `keil_build` 执行 Keil 编译（需要 clean build 时传 `rebuild=True`）

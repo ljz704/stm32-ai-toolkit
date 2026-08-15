@@ -1,52 +1,56 @@
 # STM32 AI 开发工作流 —— 可移植配置包
 
+> **双平台支持**：本工具包同时适配 **Claude Code**（默认，见 [USAGE.md](USAGE.md)）和
+> **DeepSeek Harness (DSH)**（`python install.py --dsh`，见 [USAGE_DSH.md](USAGE_DSH.md)）。
+
 ## 这是什么？
 
-这是你的 **STM32 + Claude Code 开发环境完整配置包**。换电脑时，把这个文件夹复制过去，**双击 `install.py`**，几分钟后全部恢复。
+这是你的 **STM32 + AI 开发环境完整配置包**。换电脑时，把这个文件夹复制过去，**双击 `install.py`**，几分钟后全部恢复。
 
 包含四层配置：
 
-- **Skills** —— Claude 的开发技能（编译烧录、调试分析、代码审查、外设配置）
-- **Commands** —— 常用斜杠命令（`/build`、`/flash`、`/serial`、`/review`、`/newproject` 等）
-- **MCP Server** —— 让 Claude 能直接调用 Keil 编译、STM32CubeProgrammer 烧录、串口收发
-- **Hooks + 模板** —— 强制编译验证、记忆自动注入、新工程脚手架
+- **Skills** —— AI 的开发技能（编译烧录、调试分析、代码审查、外设配置、新建工程、记录踩坑）
+- **Commands** —— 常用斜杠命令（`/build`、`/flash`、`/serial`、`/review`、`/newproject` 等；DSH 下转为同名 skill）
+- **MCP Server** —— 让 AI 能直接调用 Keil 编译、STM32CubeProgrammer 烧录、串口收发
+- **Hooks + 模板** —— 强制编译验证（Claude Code）、记忆自动注入、新工程脚手架（DSH 无 hooks，靠 skill 铁律约束）
 
 ## 目录结构
 
 ```
 stm32-ai-toolkit/
-├── install.py                    ← 双击运行，一键安装/恢复
-├── uninstall.py                  ← 一键卸载（默认移到备份，--purge 彻底清理）
+├── install.py                    ← 双击运行，一键安装/恢复（--dsh 装到 ~/.dsh）
+├── uninstall.py                  ← 一键卸载（默认移到备份，--purge 彻底清理；--dsh 卸载 DSH 配置）
 ├── backup.py                     ← 把 ~/.claude 的配置同步回本包（备份）
-├── new_project.py                ← 新工程脚手架（可用 /newproject 对话式调用，默认 CubeMX 无头生成）
-├── mcu_knowledge.py              ← STM32 型号知识库（解析型号→核心/内存/启动文件，/newproject 预览用）
+├── new_project.py                ← 新工程脚手架（默认 CubeMX 无头生成，记忆文件生成到 .dsh/memory）
+├── mcu_knowledge.py              ← STM32 型号知识库（解析型号→核心/内存/启动文件，预览用）
 ├── make_ioc.py                   ← 型号 → 最小 .ioc（RCC 时钟块取自官方示例/内置模板，全家族通用）
 ├── cubemx_gen.py                 ← STM32CubeMX 无头生成（固件包预检 / 生成 / 清理残留进程）
 ├── README.md                     ← 本文件
-├── global_claude.md              ← 你的全局开发规范（装到 ~/.claude/CLAUDE.md）
+├── USAGE_DSH.md                  ← DSH（DeepSeek Harness）使用说明
+├── global_claude.md              ← 你的全局开发规范（Claude Code 版，装到 ~/.claude/CLAUDE.md）
+├── dsh_global.md                 ← 你的全局开发规范（DSH 版，装到 ~/.dsh/AGENTS.md）
 ├── _cmdutil.py                   ← 脚本共用模块（编码/子进程封装）
 ├── install_summary.json          ← 安装摘要（安装后自动生成）
-├── skills/                       ← Claude Skills（每个含 SKILL.md）
-│   ├── stm32-build-flash-debug/
-│   ├── stm32-code-review/
-│   ├── stm32-debug-analyze/
-│   └── stm32-peripheral-config/
-├── commands/                     ← 斜杠命令（装到 ~/.claude/commands/）
+├── skills/                       ← AI Skills（每个含 SKILL.md，共 6 个）
+│   ├── stm32-build-flash-debug/  stm32-code-review/
+│   ├── stm32-debug-analyze/      stm32-peripheral-config/
+│   └── stm32-new-project/        stm32-known-issues/
+├── commands/                     ← 斜杠命令（装到 ~/.claude/commands/；DSH 下转为同名 skill）
 │   ├── build.md  flash.md  serial.md
 │   ├── review.md  newissue.md  newproject.md
 ├── templates/
 │   └── project/                  ← new_project.py 的工程骨架模板
-│       ├── CLAUDE.md.template
-│       ├── settings.json.template（hooks 配置）
+│       ├── CLAUDE.md.template    （DSH 兼容：显式引用 .dsh/memory，无 @ 导入）
+│       ├── settings.json.template（hooks 配置，仅 Claude Code；DSH 默认不生成）
 │       ├── hardware.yaml.blank
 │       ├── memory/               ← architecture / pin_usage / known_issues / session_log
 │       ├── src/  inc/  MDK-ARM/
 ├── mcp/
-│   ├── stm32_mcp_server.py       ← MCP Server（14 个工具）
+│   ├── stm32_mcp_server.py       ← MCP Server（15 个工具）
 │   └── register_mcp.py
 └── scripts/
     ├── serial_live.py            ← 独立串口实时监控
-    └── hooks/                    ← 编译闸门 / 记忆注入 / 会话日志等
+    └── hooks/                    ← 编译闸门 / 记忆注入 / 会话日志等（仅 Claude Code）
 ```
 
 ## 换电脑恢复步骤
@@ -94,9 +98,27 @@ cd stm32-ai-toolkit
 python install.py
 ```
 
+### 方式四：DSH（DeepSeek Harness）
+
+用 DSH 时，把配置装到 `~/.dsh`（不碰 `~/.claude`）：
+
+```bash
+python install.py --dsh       # AGENTS.md + 6 skills + MCP 注册（~/.dsh/mcp-servers.json）
+python uninstall.py --dsh     # 卸载（移到备份，--purge 彻底清理）
+```
+
+DSH 原生自动加载：
+- **全局规范** `~/.dsh/AGENTS.md`（新会话生效）
+- **项目级** `CLAUDE.md` / `AGENTS.md`（工程根目录自动加载，已验证）
+- **6 个 skill**（设置 → Skill 管理，可开关/删除）
+- **MCP**（设置 → MCP 管理，动态挂载即时生效）
+
+详细用法见 [USAGE_DSH.md](USAGE_DSH.md)。
+
 ## 安装后验证清单
 
 ```bash
+# Claude Code 模式
 # 1. 全局规范
 ls %USERPROFILE%\.claude\CLAUDE.md
 
@@ -115,6 +137,24 @@ claude mcp list
 # 5. 启动对话测试
 claude
 #   说: "编译当前工程"  （若在带 hooks 的工程里，AI 会自动调用 keil_build）
+```
+
+```bash
+# DSH 模式验证（装到 ~/.dsh）
+# 1. 全局指令
+ls %USERPROFILE%\.dsh\AGENTS.md
+
+# 2. Skills（6 个，含 SKILL.md）
+ls %USERPROFILE%\.dsh\skills\
+#   应看到 stm32-build-flash-debug / stm32-code-review / stm32-debug-analyze /
+#          stm32-peripheral-config / stm32-new-project / stm32-known-issues
+
+# 3. MCP 注册表
+ls %USERPROFILE%\.dsh\mcp-servers.json
+#   或在 DSH 设置 → MCP 管理 看到 stm32-toolkit（enabled）
+
+# 4. 打开 DSH 对话测试
+#   说: "编译当前工程" → 模型调用 mcp__stm32-toolkit__keil_build
 ```
 
 ## 日常更新

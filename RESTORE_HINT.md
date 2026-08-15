@@ -24,3 +24,24 @@ AI 会执行以下步骤：
 5. 运行 claude mcp list 确认 stm32-toolkit 已注册
 6. 如果有错误，帮我排查
 ```
+
+## DSH（DeepSeek Harness）恢复
+
+用 DSH 时，在新电脑上直接说：
+
+> "帮我恢复 STM32 开发环境（DSH），工具包在 <路径>"
+
+或者手动执行：
+
+```
+我的 STM32 AI 开发工具包在 <路径>，我用的是 DeepSeek Harness (DSH)。
+请帮我：
+1. 检查 Python 和 pip 是否可用
+2. 安装 fastmcp 和 pyserial
+3. 运行 <路径>/install.py --dsh
+4. 验证 ~/.dsh/AGENTS.md、skills（6 个）是否就位
+5. 确认 ~/.dsh/mcp-servers.json 含 stm32-toolkit（或 DSH 设置 → MCP 管理可见）
+6. 如果有错误，帮我排查
+```
+
+> DSH 与 Claude Code 配置互不干扰（~/.dsh vs ~/.claude），可同时安装两套。

@@ -235,20 +235,46 @@ def render_to_file(src: Path, dst: Path, **kwargs) -> bool:
     return True
 
 
+# ===================== AI 环境（Claude Code / DSH 双轨） =====================
+def resolve_env(env_arg) -> str:
+    """解析目标 AI 环境：--env 显式 > 环境变量 STM32_TOOLKIT_ENV > 默认 claude。
+
+    claude：.claude/memory + @ 自动导入 + hooks 默认生成（Claude Code 风格）；
+    dsh：   .dsh/memory + 显式路径引用 + 无 hooks（DeepSeek Harness 风格）。
+    """
+    if env_arg:
+        return env_arg
+    if os.environ.get("STM32_TOOLKIT_ENV", "").strip().lower() == "dsh":
+        return "dsh"
+    return "claude"
+
+
+def memory_rel_dir(env: str) -> Path:
+    """按 AI 环境返回工程内 memory 目录相对路径（claude→.claude/memory，dsh→.dsh/memory）。"""
+    return Path(".claude" if env == "claude" else ".dsh") / "memory"
+
+
+def claude_template_for(env: str) -> Path:
+    """按 AI 环境选 CLAUDE.md 模板：claude→@ 自动导入版，dsh→显式路径版。"""
+    return TEMPLATES_DIR / ("CLAUDE.md.dsh.template" if env == "dsh" else "CLAUDE.md.template")
+
+
 # ===================== 生成逻辑 =====================
 def generate_full_skeleton(target: Path, project_name: str, mcu_model: str,
                            template: str, mdk_project: str, do_hooks: bool,
-                           mcu_tokens: dict, full: bool = True) -> list:
+                           mcu_tokens: dict, full: bool = True,
+                           env: str = "claude") -> list:
     """生成工程骨架。
 
     full=True：含 src/inc/MDK-ARM（SPL 移植文件，需 template）。
-    full=False：config-only，只生成 CLAUDE.md / hardware.yaml / .claude/*。
+    full=False：config-only，只生成 CLAUDE.md / hardware.yaml / memory。
+    env="claude"→.claude/memory + @ 导入 + hooks 默认；env="dsh"→.dsh/memory + 显式路径。
     返回创建的文件列表。
     """
     created = []
 
     files = [
-        (TEMPLATES_DIR / "CLAUDE.md.template",    target / "CLAUDE.md"),
+        (claude_template_for(env),    target / "CLAUDE.md"),
         (TEMPLATES_DIR / "hardware.yaml.blank",   target / "hardware.yaml"),
     ]
     if full and template:
@@ -267,14 +293,17 @@ def generate_full_skeleton(target: Path, project_name: str, mcu_model: str,
         if render_to_file(src, dst, **kwargs):
             created.append(dst)
 
+    # 记忆文件放 memory_rel_dir(env)（claude→.claude/memory，dsh→.dsh/memory）
     for mem in MEMORY_FILES:
-        dst = target / ".claude" / "memory" / mem
+        dst = target / memory_rel_dir(env) / mem
         if render_to_file(TEMPLATES_DIR / "memory" / mem, dst,
                           project_name=project_name, mcu_model=mcu_model,
                           mdk_project=mdk_project, mcu_tokens=mcu_tokens):
             created.append(dst)
 
     if do_hooks:
+        # 仅 Claude Code 需要 hooks（DSH 无 PreToolUse/PostToolUse 机制）。
+        # claude 环境默认生成；dsh 环境仅显式 --hooks 时生成（见 main）。
         dst = target / ".claude" / "settings.json"
         if render_to_file(TEMPLATES_DIR / "settings.json.template", dst,
                           project_name=project_name, mcu_model=mcu_model,
@@ -325,12 +354,16 @@ def run_cubemx_flow(target: Path, project_name: str, mcu_model: str,
 
 
 def install_existing_layer(target: Path, project_name: str, mcu_model: str,
-                           mdk_project: str, do_hooks: bool, mcu_tokens: dict) -> list:
-    """给已有 Keil 工程补装 AI 辅助层，返回创建/更新的文件列表。"""
+                           mdk_project: str, do_hooks: bool, mcu_tokens: dict,
+                           env: str = "claude") -> list:
+    """给已有 Keil 工程补装 AI 辅助层，返回创建/更新的文件列表。
+
+    env="claude"→.claude/memory + @ 导入版 CLAUDE.md；env="dsh"→.dsh/memory + 显式路径版。
+    """
     touched = []
 
     # CLAUDE.md：生成/更新（覆盖渲染）
-    claude_src = TEMPLATES_DIR / "CLAUDE.md.template"
+    claude_src = claude_template_for(env)
     claude_dst = target / "CLAUDE.md"
     if claude_src.exists():
         claude_dst.parent.mkdir(parents=True, exist_ok=True)
@@ -342,9 +375,9 @@ def install_existing_layer(target: Path, project_name: str, mcu_model: str,
     else:
         warn(f"未找到模板: {claude_src}，跳过 CLAUDE.md")
 
-    # memory 空白模板：已存在不覆盖
+    # memory 空白模板：已存在不覆盖（目录按 env：claude→.claude/memory，dsh→.dsh/memory）
     for mem in MEMORY_FILES:
-        dst = target / ".claude" / "memory" / mem
+        dst = target / memory_rel_dir(env) / mem
         if render_to_file(TEMPLATES_DIR / "memory" / mem, dst,
                           project_name=project_name, mcu_model=mcu_model,
                           mdk_project=mdk_project, mcu_tokens=mcu_tokens):
@@ -357,7 +390,7 @@ def install_existing_layer(target: Path, project_name: str, mcu_model: str,
                       mcu_tokens=mcu_tokens):
         touched.append(hw_dst)
 
-    # settings.json：生成/更新（覆盖，TOOLKIT_PATH 可能变化）
+    # settings.json：仅 Claude Code hooks（DSH 无 hooks 机制）；生成/更新（覆盖，TOOLKIT_PATH 可能变化）
     if do_hooks:
         settings_src = TEMPLATES_DIR / "settings.json.template"
         settings_dst = target / ".claude" / "settings.json"
@@ -375,10 +408,11 @@ def install_existing_layer(target: Path, project_name: str, mcu_model: str,
 
 
 def repair_hooks(target: Path, project_name: str, mcu_model: str, mdk_project: str) -> list:
-    """把已有工程 .claude/settings.json 的 hooks 路径刷新到当前工具包。
+    """把已有工程 .claude/settings.json 的 hooks 路径刷新到当前工具包（Claude Code 兼容用）。
 
     用途：工具包被移动 / 换电脑 clone 后，工程里 settings.json 仍指向旧路径，
     hooks 静默失效。本函数只动 settings.json，不碰 CLAUDE.md / memory / hardware.yaml。
+    DSH 无 hooks 机制，此修复仅对继续使用 Claude Code 的工程有意义。
 
     保守策略：
       - settings.json 不存在或未引用本工具包 hooks（无 "scripts/hooks"）→ 视为用户自定义配置，跳过；
@@ -444,12 +478,19 @@ def do_git_init(target: Path) -> None:
 
 
 def print_next_steps(target: Path, template: str, mcu_info: dict = None,
-                     cubemx_ok: bool = False) -> None:
+                     cubemx_ok: bool = False, env: str = "claude") -> None:
     print()
     info("=" * 58)
+    # AI 环境提示语：claude→Claude Code /build；dsh→DSH 说编译
+    if env == "dsh":
+        open_hint = f"进 {target} 用 DSH 打开，说\"编译当前工程\"（MCP keil_build 自动编译）"
+        build_hint = "用 DSH 打开说\"编译当前工程\"验证编译"
+    else:
+        open_hint = f"进 {target} 打开 Claude Code，运行 /build 验证编译"
+        build_hint = "进入 Claude Code 打开该目录，运行 /build 验证编译"
     if cubemx_ok:
         info("下一步（CubeMX 已生成完整 HAL 工程）：")
-        info(f"  1. 进 {target} 打开 Claude Code，运行 /build 验证编译")
+        info(f"  1. {open_hint}")
         info("  2. 需配置引脚/外设时，用 CubeMX GUI 打开同目录 <工程名>.ioc 调整后重新生成")
         info("  3. hardware.yaml 的 clock / 外设表按实际板卡补充")
         info("  4. git init 并首次提交（若未在本脚本执行）")
@@ -462,7 +503,7 @@ def print_next_steps(target: Path, template: str, mcu_info: dict = None,
             info(f"  1. STM32CubeMX 配置 {mcu_info['model']} 并生成工程到 {target}/")
             info("  2. 生成后补装 AI 辅助层:")
             info(f"     python install.py --project {target}")
-            info("     （补装 CLAUDE.md / hooks / hardware.yaml，规格已按型号填好）")
+            info("     （补装 CLAUDE.md / memory / hardware.yaml，规格已按型号填好）")
         else:
             info("下一步（config-only 骨架，无 SPL 移植文件）：")
             info(f"  1. 用 STM32CubeMX 生成 {target}/ 下工程（Core/Drivers/MDK-ARM）")
@@ -473,7 +514,7 @@ def print_next_steps(target: Path, template: str, mcu_info: dict = None,
     info("下一步：")
     info(f"  1. 用 Keil 向导 / CubeMX 在 {target}/MDK-ARM 生成 .uvprojx 工程")
     info(f"  2. 加入源文件: src/main.c、src/{it_c}、ST 库 system 文件，Include Paths 加 inc/")
-    info(f"  3. 进入 {target} 打开 Claude Code，运行 /build 验证编译")
+    info(f"  3. {build_hint}")
     info("  4. git init 并首次提交（若未在本脚本执行）")
     info("=" * 58)
 
@@ -501,8 +542,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--json", action="store_true",
                     help="与 --query-mcu 搭配：JSON 输出（纯 ASCII，给 Claude 解析）")
     ap.add_argument("--no-git", action="store_true", help="不执行 git init")
+    ap.add_argument("--env", choices=["claude", "dsh"], default=None,
+                    help="目标 AI 环境（默认读环境变量 STM32_TOOLKIT_ENV，未设则 claude）："
+                         "claude→.claude/memory + @ 自动导入 + hooks 默认生成；"
+                         "dsh→.dsh/memory + 显式路径引用 + 无 hooks")
+    ap.add_argument("--hooks", action="store_true",
+                    help="强制生成 .claude/settings.json（Claude Code hooks；默认 claude 环境生成、dsh 环境不生成）")
     ap.add_argument("--no-hooks", action="store_true",
-                    help="不生成 .claude/settings.json（CLAUDE.md 与 memory 照常）")
+                    help="强制不生成 .claude/settings.json（覆盖 env 默认）")
     ap.add_argument("--existing", action="store_true",
                     help="目标目录已有 Keil 工程，只补装 AI 辅助层（不创建 src/inc/MDK-ARM）")
     ap.add_argument("--repair", action="store_true",
@@ -574,13 +621,19 @@ def main(argv=None) -> int:
     # CubeMX 优先：默认（未指定 --template）任何家族都走无头生成；--no-cubemx 跳过
     want_cubemx = args.template is None and not args.no_cubemx
 
+    # AI 环境双轨：--env > 环境变量 STM32_TOOLKIT_ENV > 默认 claude
+    env = resolve_env(args.env)
+    info(f"AI 环境: {env}")
+
     do_git = not args.no_git
-    do_hooks = not args.no_hooks
-    if not auto:
-        if not args.no_git:
-            do_git = p.ask_yesno("git init", default=True)
-        if not args.no_hooks:
-            do_hooks = p.ask_yesno("生成 hooks(.claude/settings.json)", default=True)
+    # hooks：claude 默认生成、dsh 默认不生成；--hooks/--no-hooks 强制覆盖
+    do_hooks = env == "claude"
+    if args.hooks:
+        do_hooks = True
+    if args.no_hooks:
+        do_hooks = False
+    if not auto and not args.hooks and not args.no_hooks:
+        do_hooks = p.ask_yesno("生成 Claude Code hooks(.claude/settings.json)", default=do_hooks)
 
     if want_cubemx:
         info(f"项目: {project_name} | MCU: {mcu_model} | 方式: CubeMX 无头生成 | 目录: {target}")
@@ -594,7 +647,7 @@ def main(argv=None) -> int:
         if not target.exists():
             warn(f"目标目录不存在（--existing 模式应指向已有 Keil 工程）: {target}")
         created = install_existing_layer(target, project_name, mcu_model, mdk_project,
-                                         do_hooks, mcu_tokens)
+                                         do_hooks, mcu_tokens, env=env)
     else:
         if target.exists():
             if not target.is_dir():
@@ -616,18 +669,18 @@ def main(argv=None) -> int:
                 info(f"CubeMX 生成 {flow['gen'].get('generated_count', 0)} 个文件"
                      f"（Core/Drivers/MDK-ARM 已就绪），补装 AI 辅助层...")
                 created = install_existing_layer(target, project_name, mcu_model,
-                                                 mdk_project, do_hooks, mcu_tokens)
+                                                 mdk_project, do_hooks, mcu_tokens, env=env)
             else:
                 err(f"CubeMX 路径失败: {flow.get('error')}")
                 if flow.get("error_type") == "missing_firmware":
                     info("装好固件包后重跑本命令即可生成完整 HAL 工程，先给 config-only 骨架。")
                 created = generate_full_skeleton(target, project_name, mcu_model, None,
                                                  mdk_project, do_hooks, mcu_tokens,
-                                                 full=False)
+                                                 full=False, env=env)
         else:
             created = generate_full_skeleton(target, project_name, mcu_model, template,
                                              mdk_project, do_hooks, mcu_tokens,
-                                             full=not config_only)
+                                             full=not config_only, env=env)
 
     if created:
         ok(f"已生成/更新 {len(created)} 个文件:")
@@ -639,7 +692,7 @@ def main(argv=None) -> int:
     if do_git:
         do_git_init(target)
 
-    print_next_steps(target, template, mcu_info, cubemx_ok=cubemx_ok)
+    print_next_steps(target, template, mcu_info, cubemx_ok=cubemx_ok, env=env)
     return 0
 
 
