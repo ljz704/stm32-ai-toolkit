@@ -20,14 +20,23 @@
 > 生成外设代码前，先读取 `hardware.yaml`（引脚/外设/约束的权威来源）。
 
 - MCU：{{MCU_MODEL}}
-- 时钟：HSE 8MHz → PLL → SYSCLK 72MHz
+- 时钟：HSE 8MHz → PLL → SYSCLK {{MCU_SYSCLK}}MHz（默认按型号主频推导，**以实际时钟树为准**）
 - 调试接口：SWD（PA13/PA14）
 - 关键外设：（待补充，登记到 hardware.yaml）
+
+## 硬件档案定稿（发现 *.draft 时必须先执行）
+> 工程内存在 `hardware.yaml.draft` / `pin_usage.md.draft` / `ai_review_notes.md` 时，
+> 表示硬件档案尚未定稿。**做任何其他任务之前**先完成定稿：
+> 1. 读 `ai_review_notes.md` 复核清单 + 完整读取工程源码（main.c / 外设 .c / uvprojx）
+> 2. 拉 2 个子代理独立读代码交叉验证（型号 / 时钟计算 / 引脚映射）
+> 3. 验证通过后写正式 `hardware.yaml` 与 `.dsh/memory/pin_usage.md`
+>    （禁止把 .draft 直接改名当正式文件）
+> 4. 删除或归档草稿（.draft / ai_review_notes.md），保持工程根目录干净
 
 ## 编译 / 烧录（MCP 工具优先）
 ```bash
 # Keil 命令行编译（Release 模式，MCP keil_build 等价物）
-"{{KEIL_UV4}}" -b MDK-ARM/{{MDK_PROJECT}}.uvprojx -o BuildLog.txt -j0
+"{{KEIL_UV4}}" -b {{MDK_DIR}}/{{MDK_PROJECT}}.uvprojx -o BuildLog.txt -j0
 ```
 > DSH 中直接调用 MCP 工具：`mcp__stm32-toolkit__keil_build`（编译）、
 > `mcp__stm32-toolkit__stlink_flash`（烧录）、`mcp__stm32-toolkit__serial_*`（串口）。

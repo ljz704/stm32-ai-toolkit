@@ -43,14 +43,22 @@ TOOLKIT_PATH = str(SCRIPT_DIR).replace("\\", "/")
 
 
 def _detect_keil_uv4() -> str:
-    """检测 Keil UV4.exe：优先 KEIL_PATH 环境变量，再探测常见默认路径。
+    """检测 Keil UV4.exe：优先 KEIL_PATH 环境变量 → Windows 注册表 → 常见默认路径。
 
     返回的路径用于渲染模板里的编译命令占位符 {{KEIL_UV4}}；
     探测不到时退回 C:\\Keil_v5 常见默认，避免模板里出现空路径。
+    注册表探测与 install.py 共用（_probe_keil_from_registry），保证同机结果一致。
     """
     env = os.environ.get("KEIL_PATH")
     if env:
         return env
+    try:
+        from install import _probe_keil_from_registry  # 复用 install.py 的注册表探测
+        reg = _probe_keil_from_registry()
+        if reg:
+            return reg
+    except Exception:
+        pass  # 注册表探测失败时退回默认路径
     for p in (
         Path(r"C:\Keil_v5\UV4\UV4.exe"),
         Path(r"D:\Keil_v5\UV4\UV4.exe"),
@@ -63,7 +71,7 @@ def _detect_keil_uv4() -> str:
 
 KEIL_UV4 = _detect_keil_uv4()
 
-DEFAULT_NAME = "rn8209_meter"
+DEFAULT_NAME = "project"
 DEFAULT_MCU = "STM32F103C8T6"
 F1_TEMPLATE = "f1xx_general"
 F3_TEMPLATE = "f3xx_digital_power"
@@ -151,6 +159,27 @@ def mcu_tokens_from_info(mcu_info: dict) -> dict:
         return str(v)
 
     startup = "N/A" if (mcu_info["spl"] is False) else s(mcu_info["startup"])
+
+    # 时钟推导：按型号主频 + 家族 APB 分频惯例（避免写死 72MHz 导致 AI 误判）。
+    # 仅是"合理默认"，注释已提示按实际时钟树确认；HSE 仍默认 8MHz（用户可用 --hse-mhz 指定）。
+    max_freq = mcu_info.get("max_freq_mhz")
+    fam = (mcu_info.get("family") or "").upper()
+    sysclk = max_freq if max_freq else "TBD"
+    hclk = sysclk
+    # APB 分频惯例：F1 常用 /1 或 /2；F3/F4/G4/H7 常用 /2（H7 更复杂，标 TBD 更安全）
+    if fam == "F1":
+        pclk1, pclk2 = "36", "72"          # F1 典型 APB1/2 分频
+    elif fam in ("F0", "G0"):
+        pclk1 = pclk2 = s(min(max_freq, 48) if max_freq else None)
+    elif fam in ("F3", "F4", "G4", "L4", "L5", "U5", "F7"):
+        pclk1 = s(round(max_freq / 2)) if max_freq else "TBD"
+        pclk2 = s(max_freq) if max_freq else "TBD"
+    elif fam == "H7":
+        # H7 时钟树复杂（AXI/APB 多级），不猜，标 TBD 让用户填
+        pclk1 = pclk2 = "TBD"
+    else:
+        pclk1 = pclk2 = s(max_freq) if max_freq else "TBD"
+
     return {
         "{{MCU_MODEL}}": mcu_info["model"] or "N/A",
         "{{MCU_FAMILY_LABEL}}": s(mcu_info["family_label"]),
@@ -165,20 +194,26 @@ def mcu_tokens_from_info(mcu_info: dict) -> dict:
         "{{MCU_STARTUP}}": startup,
         "{{MCU_SPL}}": "true" if mcu_info["spl"] else "false",
         "{{MCU_SPL_TEXT}}": "标准外设库(SPL)" if mcu_info["spl"] else "HAL/CubeMX（无 SPL）",
+        "{{MCU_SYSCLK}}": s(sysclk),
+        "{{MCU_HCLK}}": s(hclk),
+        "{{MCU_PCLK1}}": s(pclk1),
+        "{{MCU_PCLK2}}": s(pclk2),
     }
 
 
 # ===================== 渲染与推断 =====================
 def render(text: str, project_name: str, mcu_model: str, mdk_project: str,
            toolkit_path: str = TOOLKIT_PATH, keil_uv4: str = KEIL_UV4,
-           mcu_tokens: dict = None) -> str:
+           mcu_tokens: dict = None, mdk_dir: str = "MDK-ARM") -> str:
     """渲染模板占位符（str.replace；未出现的占位符原样保留）。
 
     mcu_tokens: mcu_tokens_from_info() 的输出（{{MCU_*}} 替换表）。
+    mdk_dir: uvprojx 所在目录相对路径（新工程默认 MDK-ARM；--existing 按实际探测）。
     """
     text = text.replace("{{PROJECT_NAME}}", project_name)
     text = text.replace("{{MCU_MODEL}}", mcu_model)
     text = text.replace("{{MDK_PROJECT}}", mdk_project)
+    text = text.replace("{{MDK_DIR}}", mdk_dir)
     text = text.replace("{{TOOLKIT_PATH}}", toolkit_path)
     text = text.replace("{{KEIL_UV4}}", keil_uv4)
     if mcu_tokens:
@@ -197,15 +232,22 @@ def template_io_files(template: str):
 
 
 def find_existing_mdk_project(target: Path):
-    """--existing 模式：探测 MDK-ARM 下真实的 .uvprojx 工程名（第一个匹配的 stem）。
+    """--existing 模式：探测工程真实的 .uvprojx（名字 + 所在目录）。
 
-    找不到返回 None。有了它，编译命令里的工程文件就不会错写成默认项目名。
+    查找顺序：MDK-ARM/ 子目录 → 工程根目录 → 任意层级（rglob 兜底）。
+    返回 (stem, rel_dir)（rel_dir 如 "MDK-ARM" / "."）；找不到返回 None。
+    有了它，编译命令里的工程路径就不会错写成默认项目名/错误目录。
     """
-    mdk_dir = Path(target) / "MDK-ARM"
-    if not mdk_dir.is_dir():
-        return None
-    for p in mdk_dir.glob("*.uvprojx"):
-        return p.stem
+    target = Path(target)
+    candidates = []
+    mdk_dir = target / "MDK-ARM"
+    if mdk_dir.is_dir():
+        candidates += sorted(mdk_dir.glob("*.uvprojx"))
+    candidates += sorted(target.glob("*.uvprojx"))
+    if not candidates:
+        candidates = sorted(target.rglob("*.uvprojx"))
+    for p in candidates:
+        return p.stem, p.parent.relative_to(target).as_posix() or "."
     return None
 
 
@@ -289,7 +331,7 @@ def generate_full_skeleton(target: Path, project_name: str, mcu_model: str,
 
     for src, dst in files:
         kwargs = dict(project_name=project_name, mcu_model=mcu_model,
-                      mdk_project=mdk_project, mcu_tokens=mcu_tokens)
+                      mdk_project=mdk_project, mcu_tokens=mcu_tokens, mdk_dir="MDK-ARM")
         if render_to_file(src, dst, **kwargs):
             created.append(dst)
 
@@ -355,21 +397,37 @@ def run_cubemx_flow(target: Path, project_name: str, mcu_model: str,
 
 def install_existing_layer(target: Path, project_name: str, mcu_model: str,
                            mdk_project: str, do_hooks: bool, mcu_tokens: dict,
-                           env: str = "claude") -> list:
+                           env: str = "claude", mdk_dir: str = "MDK-ARM") -> list:
     """给已有 Keil 工程补装 AI 辅助层，返回创建/更新的文件列表。
 
     env="claude"→.claude/memory + @ 导入版 CLAUDE.md；env="dsh"→.dsh/memory + 显式路径版。
+    mdk_dir：探测到的 uvprojx 所在目录（相对工程根），编译命令按实际位置渲染。
+    CLAUDE.md 为覆盖渲染；若已有文件内容不同（用户/AI 定制过），先备份再覆盖。
     """
     touched = []
 
-    # CLAUDE.md：生成/更新（覆盖渲染）
+    # CLAUDE.md：生成/更新（覆盖渲染，内容不同则先备份）
     claude_src = claude_template_for(env)
     claude_dst = target / "CLAUDE.md"
     if claude_src.exists():
         claude_dst.parent.mkdir(parents=True, exist_ok=True)
         text = render(claude_src.read_text(encoding="utf-8"),
                       project_name=project_name, mcu_model=mcu_model, mdk_project=mdk_project,
-                      mcu_tokens=mcu_tokens)
+                      mcu_tokens=mcu_tokens, mdk_dir=mdk_dir)
+        if claude_dst.exists():
+            try:
+                old = claude_dst.read_text(encoding="utf-8")
+            except OSError:
+                old = None
+            if old is not None and old != text:
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                bak = claude_dst.with_name(f"CLAUDE.md.bak_{ts}")
+                try:
+                    claude_dst.rename(bak)
+                    info(f"已备份旧 CLAUDE.md -> {bak.name}")
+                except OSError as e:
+                    warn(f"备份旧 CLAUDE.md 失败（{e}），跳过覆盖")
+                    return touched
         claude_dst.write_text(text, encoding="utf-8")
         touched.append(claude_dst)
     else:
@@ -462,6 +520,55 @@ def repair_hooks(target: Path, project_name: str, mcu_model: str, mdk_project: s
     return [p]
 
 
+def analyze_hw(target: Path) -> None:
+    """工程硬件分析（方案 B），按工程类型分流：
+
+    - HAL/CubeMX 工程（有 Core/Src）：优先静态提取脚本（结构规整，脚本可靠），
+      生成 hardware.yaml.draft / pin_usage.md.draft / ai_review_notes.md；
+      脚本一旦跑不通（缺文件/异常/超时/退出码非 0/无草稿产物）→ 自动降级为
+      AI 直读方案，不硬跑、不静默跳过。
+    - 传统 SPL 工程（无 Core，目录结构千变万化）：不跑脚本——AI 直接完整读取
+      源码填写硬件档案，再双子代理交叉验证后定稿（脚本对 SPL 变体覆盖不可靠）。
+    """
+
+    def ai_direct(reason: str) -> None:
+        warn(f"静态提取脚本未使用（{reason}）→ 改为 AI 直读方案")
+        info("  流程：AI 读代码 → 双子代理交叉验证 → 定稿（无需 analyze_hw.py）")
+        info("  说明：AI 直接完整读取源码（main.c / 外设 .c / uvprojx）填写 hardware.yaml 与 pin_usage.md")
+
+    # SPL 检测：无 Core/Src 且无 Core/Inc → 判定 SPL（或未知结构），走 AI 直读
+    is_hal_like = (target / "Core" / "Src").exists() or (target / "Core" / "Inc").exists()
+    if not is_hal_like:
+        info(f"检测到非 CubeMX 结构工程（{target}），跳过静态提取脚本")
+        ai_direct("非 CubeMX/SPL 结构，脚本对变体目录覆盖不可靠")
+        return
+
+    script = SCRIPT_DIR / "analyze_hw.py"
+    if not script.exists():
+        ai_direct(f"未找到 analyze_hw.py（{script}）")
+        return
+    info(f"静态提取工程硬件配置（{target}）...")
+    try:
+        result = run_cmd([sys.executable, str(script), str(target)], timeout=60)
+    except Exception as exc:  # run_cmd 设计上不抛，兜底防未来改动
+        ai_direct(f"脚本执行异常: {exc}")
+        return
+    if result.error or result.timed_out:
+        ai_direct(f"脚本失败: {result.error or result.combined}")
+        return
+    if result.returncode != 0:
+        ai_direct(f"脚本退出码 {result.returncode}:\n{result.combined}")
+        return
+    drafts = [p for p in ("hardware.yaml.draft", "pin_usage.md.draft", "ai_review_notes.md")
+              if (target / p).exists()]
+    if not drafts:
+        ai_direct("脚本退出码 0 但未产出任何草稿文件")
+        return
+    ok("硬件分析完成，草稿已生成")
+    info("  hardware.yaml.draft / pin_usage.md.draft / ai_review_notes.md")
+    info("  下一步: AI 读 ai_review_notes.md 复核，必要时双子代理交叉验证后定稿")
+
+
 # ===================== 辅助 =====================
 def do_git_init(target: Path) -> None:
     info("执行 git init ...")
@@ -478,7 +585,8 @@ def do_git_init(target: Path) -> None:
 
 
 def print_next_steps(target: Path, template: str, mcu_info: dict = None,
-                     cubemx_ok: bool = False, env: str = "claude") -> None:
+                     cubemx_ok: bool = False, env: str = "claude",
+                     existing: bool = False) -> None:
     print()
     info("=" * 58)
     # AI 环境提示语：claude→Claude Code /build；dsh→DSH 说编译
@@ -488,6 +596,21 @@ def print_next_steps(target: Path, template: str, mcu_info: dict = None,
     else:
         open_hint = f"进 {target} 打开 Claude Code，运行 /build 验证编译"
         build_hint = "进入 Claude Code 打开该目录，运行 /build 验证编译"
+    if existing:
+        # 已有工程补装完成：先看有没有硬件分析草稿待定稿，再编译验证
+        drafts = [p for p in ("hardware.yaml.draft", "pin_usage.md.draft", "ai_review_notes.md")
+                  if (Path(target) / p).exists()]
+        info("下一步（已有工程补装完成）：")
+        if drafts:
+            info("  1. ⚠️ 存在硬件分析草稿（hardware.yaml.draft / ai_review_notes.md）→ **先完成定稿**：")
+            info("     AI 读 ai_review_notes.md 复核 + 完整读源码 + 双子代理交叉验证后，")
+            info("     写正式 hardware.yaml / memory/pin_usage.md，并删除/归档草稿")
+        else:
+            info("  1. 检查 CLAUDE.md / hardware.yaml / memory 是否反映实际工程（未填项补全）")
+        info(f"  2. {build_hint}")
+        info("  3. 编译 0 Error 后 git 提交")
+        info("=" * 58)
+        return
     if cubemx_ok:
         info("下一步（CubeMX 已生成完整 HAL 工程）：")
         info(f"  1. {open_hint}")
@@ -552,6 +675,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="强制不生成 .claude/settings.json（覆盖 env 默认）")
     ap.add_argument("--existing", action="store_true",
                     help="目标目录已有 Keil 工程，只补装 AI 辅助层（不创建 src/inc/MDK-ARM）")
+    ap.add_argument("--analyze", action="store_true",
+                    help="（仅配合 --existing）补装前先静态提取工程硬件配置（analyze_hw.py），"
+                         "生成 hardware.yaml.draft / pin_usage.md.draft / ai_review_notes.md，供 AI 复核后定稿")
     ap.add_argument("--repair", action="store_true",
                     help="只刷新已有工程的 hooks 路径到当前工具包（工具包移动后自愈用，不碰其他文件）")
     ap.add_argument("--yes", action="store_true", help="非交互，全部使用默认值")
@@ -563,6 +689,10 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     auto = args.yes or not sys.stdin.isatty()
     p = Prompter(auto)
+
+    if args.analyze and not args.existing:
+        err("--analyze 仅用于已有工程（必须配合 --existing），新建工程无需分析")
+        return 1
 
     if args.query_mcu:
         mcu_info = mcu_knowledge.parse_model(args.query_mcu)
@@ -590,10 +720,13 @@ def main(argv=None) -> int:
 
     if args.existing:
         target = Path(args.dir) if args.dir else Path(p.ask("目标目录", f"./{project_name}"))
+        # 已有工程：项目名默认取目录名（避免模板里残留 "project" 占位符）
+        project_name = args.name or target.name
+        mdk_dir = "MDK-ARM"
         detected = find_existing_mdk_project(target)
         if detected:
-            mdk_project = detected
-            info(f"检测到 Keil 工程: {mdk_project}.uvprojx（编译命令将指向它）")
+            mdk_project, mdk_dir = detected
+            info(f"检测到 Keil 工程: {mdk_project}.uvprojx（目录: {mdk_dir or '.'}，编译命令将指向它）")
         if args.mcu:
             mcu_model = args.mcu
         else:
@@ -602,9 +735,13 @@ def main(argv=None) -> int:
                 info(f"从 {target}/CLAUDE.md 读取到 MCU: {mcu_model}")
         if not mcu_model:
             mcu_model = p.ask("MCU 型号", DEFAULT_MCU)
+        # --analyze：补装前静态提取工程硬件配置（方案 B 确定性部分）
+        if args.analyze:
+            analyze_hw(target)
     else:
         mcu_model = args.mcu or p.ask("MCU 型号", DEFAULT_MCU)
         target = Path(args.dir) if args.dir else Path(p.ask("目标目录", f"./{project_name}"))
+        mdk_dir = "MDK-ARM"
 
     mcu_info = mcu_knowledge.parse_model(mcu_model)
     template = args.template if args.template else select_template(mcu_info)
@@ -636,7 +773,8 @@ def main(argv=None) -> int:
         do_hooks = p.ask_yesno("生成 Claude Code hooks(.claude/settings.json)", default=do_hooks)
 
     if want_cubemx:
-        info(f"项目: {project_name} | MCU: {mcu_model} | 方式: CubeMX 无头生成 | 目录: {target}")
+        mode_desc = "CubeMX 无头生成" if not args.existing else "补装 AI 辅助层（不动工程代码）"
+        info(f"项目: {project_name} | MCU: {mcu_model} | 方式: {mode_desc} | 目录: {target}")
     elif config_only:
         info(f"项目: {project_name} | MCU: {mcu_model} | config-only 骨架 | 目录: {target}")
     else:
@@ -647,7 +785,7 @@ def main(argv=None) -> int:
         if not target.exists():
             warn(f"目标目录不存在（--existing 模式应指向已有 Keil 工程）: {target}")
         created = install_existing_layer(target, project_name, mcu_model, mdk_project,
-                                         do_hooks, mcu_tokens, env=env)
+                                         do_hooks, mcu_tokens, env=env, mdk_dir=mdk_dir)
     else:
         if target.exists():
             if not target.is_dir():
@@ -669,7 +807,8 @@ def main(argv=None) -> int:
                 info(f"CubeMX 生成 {flow['gen'].get('generated_count', 0)} 个文件"
                      f"（Core/Drivers/MDK-ARM 已就绪），补装 AI 辅助层...")
                 created = install_existing_layer(target, project_name, mcu_model,
-                                                 mdk_project, do_hooks, mcu_tokens, env=env)
+                                                 mdk_project, do_hooks, mcu_tokens, env=env,
+                                                 mdk_dir="MDK-ARM")
             else:
                 err(f"CubeMX 路径失败: {flow.get('error')}")
                 if flow.get("error_type") == "missing_firmware":
@@ -692,7 +831,8 @@ def main(argv=None) -> int:
     if do_git:
         do_git_init(target)
 
-    print_next_steps(target, template, mcu_info, cubemx_ok=cubemx_ok, env=env)
+    print_next_steps(target, template, mcu_info, cubemx_ok=cubemx_ok, env=env,
+                     existing=args.existing)
     return 0
 
 

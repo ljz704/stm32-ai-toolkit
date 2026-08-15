@@ -20,7 +20,7 @@ AI 会执行以下步骤：
 1. 检查 Python 和 pip 是否可用
 2. 安装 fastmcp 和 pyserial
 3. 运行 <路径>/install.py
-4. 验证 ~/.claude/CLAUDE.md、skills（4 个）、commands（6 个）是否就位
+4. 验证 ~/.claude/CLAUDE.md、skills（6 个）、commands（6 个）是否就位
 5. 运行 claude mcp list 确认 stm32-toolkit 已注册
 6. 如果有错误，帮我排查
 ```

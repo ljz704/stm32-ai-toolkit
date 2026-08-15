@@ -1,6 +1,6 @@
 ---
 name: stm32-debug-analyze
-description: STM32 调试问题分析。当用户报告程序跑飞 死机 卡死 HardFault 进中断出不来 串口无输出或乱码 LED不亮 ADC采样不准 PWM无波形 上电无反应，或粘贴串口日志 报错 CFSR PC LR BFAR 寄存器值时使用。先收集结构化信息，读 .dsh/memory/known_issues.md 历史教训，展示原始数据后给出根因与修复方案。
+description: STM32 调试问题分析。当用户报告程序跑飞 死机 卡死 HardFault 进中断出不来 串口无输出或乱码 LED不亮 ADC采样不准 PWM无波形 上电无反应，或粘贴串口日志 报错 CFSR PC LR BFAR 寄存器值时使用。先收集结构化信息，读记忆文件 known_issues.md（.dsh/memory 或 .claude/memory，取存在者）历史教训，展示原始数据后给出根因与修复方案。
 ---
 
 # STM32 调试问题分析
@@ -8,7 +8,7 @@ description: STM32 调试问题分析。当用户报告程序跑飞 死机 卡�
 ## 核心原则
 1. **先收集结构化信息，再分析**
 2. **展示原始数据后再给结论**
-3. **读取记忆文件 `.dsh/memory/known_issues.md`（旧工程可能是 `.claude/memory/known_issues.md`，同样有效），检查是否有历史教训**
+3. **读取记忆文件 `known_issues.md`（路径取存在者：DSH 轨 `.dsh/memory/`，Claude 轨 `.claude/memory/`），检查是否有历史教训**
 
 ## 调试快照模板（引导用户收集信息）
 
@@ -49,8 +49,8 @@ description: STM32 调试问题分析。当用户报告程序跑飞 死机 卡�
 
 ### Step 1：读取项目记忆
 1. 读取项目 `CLAUDE.md`（DSH 亦支持 AGENTS.md）确认 MCU 型号和配置
-2. 读取 `.dsh/memory/known_issues.md` 检查历史教训
-3. 读取 `.dsh/memory/pin_usage.md` 检查引脚冲突
+2. 读取记忆文件 `known_issues.md`（`.dsh/memory/` 或 `.claude/memory/`，取存在者）检查历史教训
+3. 读取记忆文件 `pin_usage.md`（`.dsh/memory/` 或 `.claude/memory/`，取存在者）检查引脚冲突
 
 ### Step 2：分类定位
 

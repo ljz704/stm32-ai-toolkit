@@ -75,7 +75,12 @@ def collect_artifacts(claude_dir=CLAUDE_DIR):
 
 
 def collect_dsh_artifacts():
-    """收集 DSH 模式（--dsh）安装到 ~/.dsh 的配置。返回 [(src, 展示名), ...]。"""
+    """收集 DSH 模式（--dsh）安装到 ~/.dsh 的配置。返回 [(src, 展示名), ...]。
+
+    注意：mcp-servers.json **不整文件收集**——它可能含用户自己添加的其他 MCP server
+    （GitHub 等），整文件移走会误删。改为外科手术式移除 stm32-toolkit 条目
+    （见 _dsh_surgical_remove_mcp）。
+    """
     items = []
     if DSH_AGENTS.exists():
         items.append((DSH_AGENTS, "全局指令 AGENTS.md"))
@@ -83,9 +88,45 @@ def collect_dsh_artifacts():
         d = DSH_SKILLS_DIR / name
         if d.is_dir():
             items.append((d, f"Skill: {name}"))
-    if DSH_MCP_STATE.exists():
-        items.append((DSH_MCP_STATE, "MCP 注册表 mcp-servers.json"))
     return items
+
+
+def _dsh_surgical_remove_mcp():
+    """从 mcp-servers.json 中只移除 stm32-toolkit 条目，保留用户其他 MCP server。
+
+    先整体备份原文件到卸载备份目录（可恢复），再改写文件；文件不存在则跳过。
+    返回是否处理（True=已处理或无需处理，False=写失败）。
+    """
+    if not DSH_MCP_STATE.exists():
+        return True
+    try:
+        import json as _json
+        raw_text = DSH_MCP_STATE.read_text(encoding="utf-8-sig")  # 兼容 BOM（编辑器保存可能带）
+        raw = _json.loads(raw_text)
+        servers = raw.get("servers") if isinstance(raw, dict) else None
+        if not isinstance(servers, list):
+            warn(f"{DSH_MCP_STATE} 格式异常，跳过 MCP 移除（请手动检查）")
+            return True
+        before = len(servers)
+        kept = [s for s in servers
+                if not (isinstance(s, dict) and s.get("serverName") == MCP_SERVER_NAME)]
+        if len(kept) == before:
+            info("mcp-servers.json 中没有 stm32-toolkit 条目，无需移除")
+            return True
+        removed = before - len(kept)
+        # 备份原文件（含其他 MCP 的完整副本）
+        bk = DSH_DIR / BACKUP_ROOT_NAME / datetime.now().strftime("%Y%m%d_%H%M%S")
+        bk.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(DSH_MCP_STATE), str(bk / "mcp-servers.json"))
+        raw["servers"] = kept
+        DSH_MCP_STATE.write_text(
+            _json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        ok(f"已从 mcp-servers.json 移除 stm32-toolkit（移除 {removed} 条，保留 {len(kept)} 条其他 MCP），"
+           f"备份: {bk / 'mcp-servers.json'}")
+        return True
+    except Exception as e:
+        warn(f"移除 MCP 条目失败: {e}")
+        return False
 
 
 def _dsh_runtime_unmount_mcp():
@@ -146,7 +187,10 @@ def run_uninstall_dsh(purge=False):
     else:
         ok(f"已将 {moved} 项配置移出，备份在: {bk}")
 
-    # 运行时层面：通知运行中的 DSH 解除 MCP 挂载（文件已移走，重启后也不会再挂）
+    # MCP：外科手术式移除 stm32-toolkit 条目（保留用户其他 MCP server）
+    _dsh_surgical_remove_mcp()
+
+    # 运行时层面：通知运行中的 DSH 解除 MCP 挂载（文件已处理，重启后也不会再挂）
     _dsh_runtime_unmount_mcp()
 
     if purge:

@@ -82,7 +82,7 @@ your_project/
 
 | 文件 | 作用 | 放置位置 |
 |------|------|----------|
-| `mcp/stm32_mcp_server.py` | MCP Server（14 个工具：编译/烧录/串口/日志） | 仓库 `mcp/` |
+| `mcp/stm32_mcp_server.py` | MCP Server（15 个工具：编译/烧录/串口/日志/CubeMX） | 仓库 `mcp/` |
 | `scripts/serial_live.py` | 独立串口实时监控脚本 | 仓库 `scripts/` |
 | `skills/stm32-build-flash-debug/` | 编译烧录 Skill（强制编译 + 数据展示） | 仓库 `skills/` |
 | `skills/stm32-debug-analyze/` | 调试分析 Skill（快照模板 + 记忆读取） | 仓库 `skills/` |

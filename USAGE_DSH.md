@@ -6,8 +6,11 @@
 ## 一、DSH 模式安装（一次性）
 
 ```bash
-python install.py --dsh --no-deps    # 装到 ~/.dsh：AGENTS.md + 6 skills + MCP 注册
+python install.py --dsh    # 装到 ~/.dsh：AGENTS.md + 6 skills + 魔改插件 + MCP 注册
 ```
+
+> ⚠️ **不要加 `--no-deps`**：它会跳过 fastmcp/pyserial 安装，导致 MCP 工具不可用。
+> 只有确认依赖已装好（如换机恢复时）才用 `--no-deps`。
 
 安装内容（全部落在 `~/.dsh/`，不碰 `~/.claude`）：
 
@@ -15,9 +18,10 @@ python install.py --dsh --no-deps    # 装到 ~/.dsh：AGENTS.md + 6 skills + MC
 |------|------|--------------|
 | 全局指令 | `~/.dsh/AGENTS.md` | DSH 原生自动加载（新会话生效） |
 | Skills（6 个） | `~/.dsh/skills/` | DSH 官方 skill 系统 + 设置 → Skill 管理 |
+| 魔改插件 | `~/.dsh/profiles/node_modules/@anoslide/` | MCP 动态挂载 / 设置界面 / 文件树（**已装则跳过**，未装自动从工具包 `dsh_plugins/` 安装） |
 | MCP | `~/.dsh/mcp-servers.json` | 设置 → MCP 管理，动态挂载即时生效 |
 
-卸载：`python uninstall.py --dsh`（移到备份，`--purge` 彻底清理）。
+卸载：`python uninstall.py --dsh`（配置移到备份，MCP 条目外科手术式移除——只删 stm32-toolkit，保留你添加的其他 MCP；`--purge` 彻底清理）。
 
 ## 二、DSH 与 Claude Code 的机制对应
 
@@ -86,3 +90,13 @@ DSH 会自动匹配 skill（stm32-build-flash-debug）并调用 `mcp__stm32-tool
 2. **无 hooks 闸门**：DSH 没有编译强制闸门，改完代码要主动编译验证（工作流铁律第 1 条）。
 3. **记忆文件路径**：新工程用 `.dsh/memory/`；旧工程 `.claude/memory/` 同样兼容读取。
 4. **MCP 即时生效**：`mcp-servers.json` 由魔改插件动态挂载，无需重启 DSH。
+5. **已生成工程加外设**：日常小改动（加外设/改参数）**优先手写 USER CODE 代码**（CubeMX 重新生成不覆盖 `USER CODE BEGIN/END` 区），几分钟完成；大改（时钟树/引脚映射）才走"改 .ioc → cubemx_out 合并"流程（经验见工程 `.dsh/memory/known_issues.md`）。
+6. **已有工程补装 AI 层（方案 B）**：`new_project.py --dir <工程> --existing --mcu <型号> --env dsh --yes --analyze`
+   - **CubeMX/HAL 工程**（有 Core/）：`--analyze` 静态提取硬件配置（MCU/时钟/GPIO/外设），生成 `hardware.yaml.draft` + `pin_usage.md.draft` + `ai_review_notes.md`；AI 复核（读源码 + 双子代理交叉验证）后定稿。草稿不覆盖已有人工内容。
+   - **脚本跑不通一律 AI 直读**：SPL/非 CubeMX 结构**不跑脚本**；HAL 工程脚本一旦跑不通（缺文件/异常/超时/退出码非 0/无草稿产物），`--analyze` **自动降级为 AI 直读**并打印原因，不硬跑、不静默跳过。
+   - **AI 直读流程**（SPL 或降级时）：AI 直接完整读源码（main.c + 外设 .c + system 时钟 + uvprojx）→ 双子代理交叉验证 → 定稿。SPL 源码多为 GBK 编码，编辑须保持 GBK。
+
+## 六、待完善（TODO）
+
+- 常用外设（ADC/TIM/USART/SPI/I2C）HAL 初始化代码模板进 `stm32-peripheral-config` skill，直接插 USER CODE 区
+- "外设 → .ioc 回填 → 重新生成 → 自动合并"脚本化，让大改也一键完成

@@ -17,7 +17,7 @@ python install.py --yes           # 非交互（双击运行时默认无交互�
 
 ```bash
 claude mcp list     # 应看到 stm32-toolkit: stdio — Connected
-ls %USERPROFILE%\.claude\skills\     # 4 个 skill
+ls %USERPROFILE%\.claude\skills\     # 6 个 skill
 ls %USERPROFILE%\.claude\commands\   # 6 个命令
 ```
 
@@ -142,7 +142,7 @@ python uninstall.py --purge    # 卸载并删除全部备份（*.bak_* 和卸载
 python install.py              # 重新安装
 ```
 
-卸载行为：精确移除本工具包装的东西——全局 CLAUDE.md、4 个 Skill（按清单匹配）、6 个命令、MCP 注册；**不碰**其他同名目录里的自定义内容（如你自己加的 skill）。默认移到 `~/.claude/.stm32-toolkit-uninstalled/<时间戳>/`，随时可手动恢复；`--purge` 才真正删除。
+卸载行为：精确移除本工具包装的东西——全局 CLAUDE.md、6 个 Skill（按清单匹配）、6 个命令、MCP 注册；**不碰**其他同名目录里的自定义内容（如你自己加的 skill）。默认移到 `~/.claude/.stm32-toolkit-uninstalled/<时间戳>/`，随时可手动恢复；`--purge` 才真正删除。
 
 > Python 依赖 fastmcp/pyserial 默认保留，如需一并卸载：`python uninstall.py --purge-deps`。
 > 已生成工程里的 `.claude/settings.json`（hooks 配置）指向工具包路径，卸载不会删工程；若之后删除工具包文件夹，对应工程的 hooks 需自行清理。

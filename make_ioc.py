@@ -146,8 +146,8 @@ def _fallback_rcc(family: str, hse_hz: int) -> list:
 
 
 # ===================== 输出 =====================
-def info(msg):  print(f"[INFO] {msg}")
-def warn(msg):  print(f"[WARN] {msg}")
+def info(msg):  sys.stderr.write(f"[INFO] {msg}\n")
+def warn(msg):  sys.stderr.write(f"[WARN] {msg}\n")
 def err(msg):   sys.stderr.write(f"[ERR]  {msg}\n")
 
 
@@ -268,17 +268,38 @@ def find_user_template(fields: dict):
         base / f"{model}.ioc",
     ):
         if cand.is_file():
+            # 校验模板可复用：Mcu.Name 缺失说明模板损坏/被截断，
+            # 视为无效并回落到官方示例路径，不硬用坏模板。
+            if not _ioc_meta_line(cand, "Mcu.Name"):
+                warn(f"用户模板 {cand} 缺少 Mcu.Name 字段，视为无效，改用官方示例")
+                continue
             return cand
     return None
 
 
 def reuse_user_template(tpl: Path, project_name: str) -> str:
-    """整文件复用用户模板：只把工程名对齐到输出文件名，其余（时钟/引脚/外设）原样保留。"""
+    """整文件复用用户模板：只把工程名对齐到输出文件名，其余（时钟/引脚/外设）原样保留。
+
+    - 保留模板原始行尾（CRLF 模板输出仍是 CRLF，`.ioc` 官方格式即 CRLF）；
+    - 模板缺少 ProjectFileName/ProjectName 行时，按文件主行尾风格在末尾补上
+      （官方模板必有，但手写/精简模板可能缺，缺了 CubeMX 会拒绝加载）。
+    """
     text = tpl.read_text(encoding="utf-8", errors="replace")
-    text = re.sub(r"(?m)^ProjectManager\.ProjectFileName=.*$",
-                  f"ProjectManager.ProjectFileName={project_name}.ioc", text)
-    text = re.sub(r"(?m)^ProjectManager\.ProjectName=.*$",
-                  f"ProjectManager.ProjectName={project_name}", text)
+
+    def _rewrite(key: str, value: str) -> None:
+        nonlocal text
+        # 捕获并保留行尾（含 `\r`），避免 `.*$` 把 CRLF 退化成 LF
+        pattern = re.compile(r"(?m)^ProjectManager\." + key + r"=.*?(?=\r?\n|$)")
+        m = pattern.search(text)
+        if m:
+            text = pattern.sub(
+                lambda mo: f"ProjectManager.{key}={value}", text, count=1)
+        else:
+            eol = "\r\n" if "\r\n" in text else "\n"
+            text = text.rstrip("\r\n") + eol + f"ProjectManager.{key}={value}" + eol
+
+    _rewrite("ProjectFileName", f"{project_name}.ioc")
+    _rewrite("ProjectName", project_name)
     return text
 
 

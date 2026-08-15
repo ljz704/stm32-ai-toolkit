@@ -65,6 +65,18 @@ DSH_SKILLS_DIR = DSH_DIR / "skills"
 DSH_MCP_STATE = DSH_DIR / "mcp-servers.json"
 DSH_GLOBAL_SRC = SCRIPT_DIR / "dsh_global.md"  # 工具包内 DSH 版全局规范源文件
 
+# ── DSH 魔改插件（@anoslide）：设置界面 / MCP 动态挂载 / skill 管理的宿主 ──
+# 插件源码随工具包分发（dsh_plugins/），install --dsh 检测已装则跳过，未装则提示安装。
+DSH_PLUGINS_SRC = SCRIPT_DIR / "dsh_plugins"                # 工具包内插件源码目录
+DSH_PROFILE_NM = USER_HOME / ".dsh" / "profiles" / "node_modules"  # profile 根级 node_modules（实测插件装在这里）
+DSH_ANOSLIDE_DIR = DSH_PROFILE_NM / "@anoslide"
+DSH_KNOWN_PLUGINS = [
+    "dsh-host-files",             # 文件树/查看器/全局人设/MCP 管理（宿主接口）
+    "dsh-client-vscode-layout",   # VS Code 布局魔改（浏览器端）
+]
+DSH_CORDIS_PATCH = USER_HOME / ".dsh" / "profiles" / "web" / "cordis.patch.yml"
+DSH_CORDIS_PATCH_ROW = "vscode-host-files"  # cordis.patch.yml 中魔改插件行的 id
+
 # 本工具包安装的技能/命令清单：uninstall.py 按此精确卸载，不误删其他同目录内容
 KNOWN_SKILLS = [
     "stm32-build-flash-debug",
@@ -457,26 +469,173 @@ def check_toolchain():
 
     return keil_found, prog_found, cubemx_found
 
+# ===================== DSH 魔改插件管理 =====================
+def dsh_plugins_status():
+    """检测 DSH 魔改插件安装状态。返回 (已装列表, 缺失列表)。"""
+    installed = []
+    missing = []
+    for name in DSH_KNOWN_PLUGINS:
+        if (DSH_ANOSLIDE_DIR / name / "package.json").exists():
+            installed.append(name)
+        else:
+            missing.append(name)
+    return installed, missing
+
+
+def install_dsh_plugins(interactive: bool = True) -> bool:
+    """安装 DSH 魔改插件（@anoslide/dsh-host-files 等）到 web profile。
+
+    检测逻辑（按用户要求）：
+      1. 已安装 → 跳过并提示（幂等，不重复装）。
+      2. 未安装 → 提示用户选择来源：工具包自带 dsh_plugins/（默认推荐）或手动指定路径。
+      3. 非交互（--yes / 无 stdin）→ 直接用工具包自带源码安装，不阻塞。
+    同时确保 cordis.patch.yml 含 vscode-host-files 条目（魔改插件行）。
+    返回是否全部就绪。
+    """
+    installed, missing = dsh_plugins_status()
+
+    if not missing:
+        ok(f"DSH 魔改插件已安装（{', '.join(installed)}），跳过")
+        _ensure_cordis_patch_row()
+        return True
+
+    if not DSH_PLUGINS_SRC.exists():
+        warn(f"工具包内没有 dsh_plugins/ 源码目录（{DSH_PLUGINS_SRC}），无法自动安装")
+        info("请手动把 @anoslide/dsh-host-files 等插件复制到: " + str(DSH_ANOSLIDE_DIR))
+        return False
+
+    info(f"检测到缺失 DSH 魔改插件: {', '.join(missing)}")
+    use_bundled = True
+    if interactive and sys.stdin.isatty():
+        ans = input("  从工具包 dsh_plugins/ 安装（推荐）还是手动指定路径？[y=自带/n=手动] ").strip().lower()
+        if ans in ("n", "no"):
+            custom = input("  请输入插件源码目录（含 dsh-host-files 的上级目录）: ").strip()
+            if custom:
+                custom_path = Path(custom)
+                if custom_path.exists():
+                    src_root = custom_path
+                else:
+                    err(f"路径不存在: {custom}，退回工具包自带源码")
+                    src_root = DSH_PLUGINS_SRC
+            else:
+                src_root = DSH_PLUGINS_SRC
+            use_bundled = src_root == DSH_PLUGINS_SRC
+        else:
+            src_root = DSH_PLUGINS_SRC
+    else:
+        src_root = DSH_PLUGINS_SRC
+
+    DSH_ANOSLIDE_DIR.mkdir(parents=True, exist_ok=True)
+    ok_count = 0
+    for name in DSH_KNOWN_PLUGINS:
+        src = src_root / name
+        if not (src / "package.json").exists():
+            warn(f"  {src} 缺少 package.json，跳过 {name}")
+            continue
+        dst = DSH_ANOSLIDE_DIR / name
+        _backup_existing(dst, DSH_DIR / ".stm32-toolkit-backups")
+        shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
+        ok(f"已安装 DSH 插件: {name} → {dst}")
+        ok_count += 1
+
+    if ok_count == 0:
+        err("未安装任何插件（源码缺失？）")
+        return False
+
+    ok(f"DSH 魔改插件安装完成（{ok_count} 个），来源: {src_root}")
+    if use_bundled:
+        info("  提示: 插件源码随工具包分发，换机后 install.py --dsh 会自动安装")
+    _ensure_cordis_patch_row()
+    return True
+
+
+def _ensure_cordis_patch_row() -> bool:
+    """确保 cordis.patch.yml 含 vscode-host-files 条目（魔改插件行）。
+
+    缺失则**原地追加** insert 条目（copy2 备份原文件，不清空用户其他条目）；
+    已存在则跳过。文件不存在时**主动创建**（带标准头部，DSH 首次启动前
+    cordis.patch.yml 可能还没生成，不创建则插件行丢失、插件永不加载）。
+    DSH 重启后生效。
+    """
+    if not DSH_CORDIS_PATCH.exists():
+        # 全新环境：主动创建 profile 目录 + cordis.patch.yml（含标准头部 + 插件行）
+        try:
+            DSH_CORDIS_PATCH.parent.mkdir(parents=True, exist_ok=True)
+            header = (
+                "# Your patch layer for this dsh profile, applied after every bundle layer:\n"
+                "# a top-level YAML array of loader patch entries (id-targeted config\n"
+                "# overrides, disables, and insert lists; `!!js` expressions allowed).\n"
+            )
+            DSH_CORDIS_PATCH.write_text(header, encoding="utf-8")
+            ok(f"cordis.patch.yml 不存在，已创建: {DSH_CORDIS_PATCH}")
+        except OSError as e:
+            warn(f"创建 {DSH_CORDIS_PATCH} 失败: {e}")
+            return False
+    try:
+        text = DSH_CORDIS_PATCH.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        warn(f"{DSH_CORDIS_PATCH} 不是有效 UTF-8，跳过（{e}）")
+        return False
+    except OSError as e:
+        warn(f"读取 {DSH_CORDIS_PATCH} 失败: {e}")
+        return False
+    # 按 "- id:" 行判断条目是否已存在（避免注释/说明文字误判）
+    for line in text.splitlines():
+        if line.strip() == f"- id: {DSH_CORDIS_PATCH_ROW}":
+            info(f"cordis.patch.yml 已含 {DSH_CORDIS_PATCH_ROW} 条目，跳过")
+            return True
+    # copy2 备份（不 move，保留原文件继续追加，不清空用户其他条目）
+    try:
+        bak = DSH_DIR / ".stm32-toolkit-backups" / datetime.now().strftime("%Y%m%d_%H%M%S")
+        bak.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(DSH_CORDIS_PATCH), str(bak / DSH_CORDIS_PATCH.name))
+        info(f"已备份 {DSH_CORDIS_PATCH.name} → {bak / DSH_CORDIS_PATCH.name}")
+    except OSError as e:
+        warn(f"备份 {DSH_CORDIS_PATCH} 失败: {e}（继续追加）")
+    row = f"""
+# ── VS Code 布局魔改：文件树/查看器/全局人设/MCP 管理的宿主接口（install.py --dsh 自动维护）──
+- insert:
+    - id: {DSH_CORDIS_PATCH_ROW}
+      name: '@anoslide/dsh-host-files'
+"""
+    try:
+        with open(DSH_CORDIS_PATCH, "a", encoding="utf-8") as f:
+            f.write(row)
+        ok(f"cordis.patch.yml 已登记 {DSH_CORDIS_PATCH_ROW} 条目（DSH 重启后生效）")
+        return True
+    except OSError as e:
+        warn(f"写入 {DSH_CORDIS_PATCH} 失败: {e}")
+        return False
+
+
 # ===================== DSH 安装（--dsh 模式） =====================
 # 目标：把本工作流适配到 DeepSeek Harness（DSH）——
 #   ~/.dsh/AGENTS.md        全局指令（DSH 原生加载）
 #   ~/.dsh/skills/          6 个 skill（官方 skill 系统 + 魔改插件管理共用）
 #   ~/.dsh/mcp-servers.json MCP 注册（魔改插件动态挂载，即时生效）
-def install_dsh():
+def install_dsh(no_mcp: bool = False, interactive: bool = True) -> int:
+    """以 DSH 模式安装（~/.dsh）。no_mcp=True 时跳过 MCP 注册（--no-mcp 生效）。"""
     info("以 DSH 模式安装（~/.dsh）...")
 
     # DSH 模式的备份根：~/.dsh/.stm32-toolkit-backups（不污染 ~/.claude）
     dsh_backup_root = DSH_DIR / ".stm32-toolkit-backups"
 
+    # 0. DSH 魔改插件：已装跳过，未装提示安装（MCP 挂载依赖它）
+    plugins_ok = install_dsh_plugins(interactive=interactive)
+    if not plugins_ok:
+        warn("DSH 魔改插件未就绪：MCP 动态挂载 / 设置界面不可用，"
+             "需手动安装 @anoslide/dsh-host-files 到 " + str(DSH_ANOSLIDE_DIR))
+
     # 1. 全局指令 → ~/.dsh/AGENTS.md
     DSH_DIR.mkdir(parents=True, exist_ok=True)
-    src = DSH_GLOBAL_SRC if DSH_GLOBAL_SRC.exists() else SCRIPT_DIR / "global_claude.md"
     dst = DSH_AGENTS
-    if not src.exists():
-        warn(f"未找到全局规范源文件（{DSH_GLOBAL_SRC.name} / global_claude.md），跳过 AGENTS.md")
+    if not DSH_GLOBAL_SRC.exists():
+        warn(f"未找到 DSH 全局规范源 {DSH_GLOBAL_SRC.name}，跳过 AGENTS.md 安装。"
+             f"不要用 Claude 版 global_claude.md 顶替（内容面向 hooks/commands，DSH 用不上）；"
+             f"工具包目录结构修复后重跑 install.py --dsh 即可补齐。")
     else:
         _backup_existing(dst, dsh_backup_root)
-        shutil.copy2(str(src), str(dst))
+        shutil.copy2(str(DSH_GLOBAL_SRC), str(dst))
         ok(f"全局指令已安装: {dst}")
 
     # 2. Skills → ~/.dsh/skills/（6 个，含 SKILL.md 的目录整体拷贝）
@@ -499,7 +658,11 @@ def install_dsh():
 
     # 3. MCP → ~/.dsh/mcp-servers.json（魔改插件 dsh-host-files 的注册表格式）
     keil_path, prog_path, cubemx_path = check_toolchain()
-    mcp_ok = _register_mcp_dsh(keil_path, prog_path, cubemx_path)
+    if no_mcp:
+        info("已跳过 MCP 注册（--no-mcp）")
+        mcp_ok = False
+    else:
+        mcp_ok = _register_mcp_dsh(keil_path, prog_path, cubemx_path)
 
     # 4. 生成安装摘要（DSH 版，记录实际安装内容）
     try:
@@ -516,7 +679,7 @@ def install_dsh():
             "mcp_registered": mcp_ok,
             "installed_skills": dsh_skills,
         }
-        summary_file = SCRIPT_DIR / "install_summary.json"
+        summary_file = SCRIPT_DIR / "install_summary_dsh.json"
         with open(summary_file, "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2, ensure_ascii=False)
         ok(f"配置摘要已保存: {summary_file}")
@@ -528,7 +691,12 @@ def install_dsh():
     info("DSH 模式安装完成！")
     info("  - 全局指令: ~/.dsh/AGENTS.md（新会话自动加载）")
     info("  - Skills:   6 个（设置 → Skill 管理可见，可开关/删除）")
-    info("  - MCP:      stm32-toolkit（设置 → MCP 管理可见，即时生效）")
+    if no_mcp:
+        info("  - MCP:      已跳过（--no-mcp）")
+    elif mcp_ok and plugins_ok:
+        info("  - MCP:      stm32-toolkit（设置 → MCP 管理可见，即时生效）")
+    elif mcp_ok and not plugins_ok:
+        info("  - MCP:      stm32-toolkit 已写入注册表，但魔改插件未就绪，需重启 DSH 或手动装插件后生效")
     if mcp_ok:
         ok("MCP 已注册，可以在 DSH 对话中直接调用 mcp__stm32-toolkit__* 工具")
     else:
@@ -575,7 +743,7 @@ def _register_mcp_dsh(keil_path=None, prog_path=None, cubemx_path=None) -> bool:
         if DSH_MCP_STATE.exists():
             try:
                 import json as _json
-                raw = _json.loads(DSH_MCP_STATE.read_text(encoding="utf-8"))
+                raw = _json.loads(DSH_MCP_STATE.read_text(encoding="utf-8-sig"))  # 兼容 BOM
                 if isinstance(raw, dict) and isinstance(raw.get("servers"), list):
                     state = raw
             except Exception:
@@ -688,7 +856,7 @@ def generate_summary(keil_path, prog_path, mcp_ok, cubemx_path=None):
         "installed_commands": installed_commands,
     }
 
-    summary_file = SCRIPT_DIR / "install_summary.json"
+    summary_file = SCRIPT_DIR / "install_summary_claude.json"
     with open(summary_file, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
@@ -696,8 +864,14 @@ def generate_summary(keil_path, prog_path, mcp_ok, cubemx_path=None):
     return summary
 
 # ===================== --project 模式: 对已有工程补装 AI 辅助层 =====================
-def install_project(project_dir: Path):
-    info(f"对已有工程补装 AI 辅助层: {project_dir}")
+def install_project(project_dir: Path, env: str = None, analyze: bool = False):
+    """对已有工程补装 AI 辅助层（委托 new_project.py --existing）。
+
+    env：目标 AI 环境（"claude"/"dsh"），透传给 new_project.py --env，
+    避免 DSH 轨工程被补装成 Claude 轨（记忆体系错乱）。None 时由 new_project 自行解析。
+    analyze：True 时透传 --analyze（补装前静态提取硬件配置）。
+    """
+    info(f"对已有工程补装 AI 辅助层: {project_dir}" + (f"（env={env}）" if env else ""))
 
     np_script = SCRIPT_DIR / "new_project.py"
     if not np_script.exists():
@@ -705,6 +879,10 @@ def install_project(project_dir: Path):
         return 1
 
     cmd = [sys.executable, str(np_script), "--dir", str(project_dir), "--existing", "--yes"]
+    if env:
+        cmd += ["--env", env]
+    if analyze:
+        cmd += ["--analyze"]
     result = run_cmd(cmd, timeout=300)
     if result.error or result.timed_out:
         err(f"补装失败: {result.error or result.combined}")
@@ -714,8 +892,11 @@ def install_project(project_dir: Path):
         return 1
 
     ok("补装完成")
-    info("  已为该工程生成 .claude 配置 / SKILL.md 等 AI 辅助文件")
-    info("  打开该工程后，让 Claude 读取工程内 .claude/CLAUDE.md 即可使用")
+    info(f"  已为该工程生成 {'DSH' if env == 'dsh' else 'Claude Code'} 辅助层"
+         f"（CLAUDE.md / memory / hardware.yaml）")
+    if analyze:
+        info("  已生成硬件分析草稿（hardware.yaml.draft / pin_usage.md.draft / ai_review_notes.md），"
+             "请 AI 复核 + 双子代理交叉验证后定稿")
     return 0
 
 
@@ -755,6 +936,12 @@ def main():
                         help="DSH 模式：装到 ~/.dsh（AGENTS.md + 6 skills + mcp-servers.json），适配 DeepSeek Harness")
     parser.add_argument("--no-mcp", action="store_true", help="跳过 MCP 注册")
     parser.add_argument("--no-deps", action="store_true", help="跳过 pip 依赖安装")
+    parser.add_argument("--env", choices=["claude", "dsh"], default=None,
+                        help="目标 AI 环境（--project 补装时透传 new_project.py --env，"
+                             "避免 DSH 轨工程被改写成 Claude 轨）")
+    parser.add_argument("--analyze", action="store_true",
+                        help="（配合 --project）补装前静态提取工程硬件配置（analyze_hw.py），"
+                             "生成 hardware.yaml.draft / pin_usage.md.draft / ai_review_notes.md 供 AI 复核")
     parser.add_argument("--yes", action="store_true",
                         help="跳过所有 input 确认（双击运行时默认无交互，可不用本参数）")
     args = parser.parse_args()
@@ -762,7 +949,7 @@ def main():
     if args.project:
         # --project 模式：只补装已有工程，不装全局配置、不注册 MCP
         check_python()
-        rc = install_project(Path(args.project).resolve())
+        rc = install_project(Path(args.project).resolve(), env=args.env, analyze=args.analyze)
         sys.exit(rc)
 
     if args.repair:
@@ -775,10 +962,13 @@ def main():
         # --dsh 模式：装到 ~/.dsh，适配 DeepSeek Harness（不碰 ~/.claude）
         check_python()
         if not args.no_deps:
-            install_deps()
+            deps_ok = install_deps()
+            if not deps_ok:
+                warn("Python 依赖安装失败（fastmcp/pyserial），MCP 工具可能不可用")
         else:
             info("已跳过依赖安装（--no-deps）")
-        sys.exit(install_dsh())
+        interactive = not args.yes
+        sys.exit(install_dsh(no_mcp=args.no_mcp, interactive=interactive))
 
     print("=" * 60)
     print("  STM32 AI 开发工作流 —— 一键安装/恢复")
@@ -788,7 +978,9 @@ def main():
     check_python()
 
     if not args.no_deps:
-        install_deps()
+        deps_ok = install_deps()
+        if not deps_ok:
+            warn("Python 依赖安装失败（fastmcp/pyserial），MCP 工具可能不可用")
     else:
         info("已跳过依赖安装（--no-deps）")
 

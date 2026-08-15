@@ -30,7 +30,7 @@ stm32-ai-toolkit/
 ├── global_claude.md              ← 你的全局开发规范（Claude Code 版，装到 ~/.claude/CLAUDE.md）
 ├── dsh_global.md                 ← 你的全局开发规范（DSH 版，装到 ~/.dsh/AGENTS.md）
 ├── _cmdutil.py                   ← 脚本共用模块（编码/子进程封装）
-├── install_summary.json          ← 安装摘要（安装后自动生成）
+├── install_summary_{claude,dsh}.json ← 安装摘要（安装后自动生成，按轨分文件）
 ├── skills/                       ← AI Skills（每个含 SKILL.md，共 6 个）
 │   ├── stm32-build-flash-debug/  stm32-code-review/
 │   ├── stm32-debug-analyze/      stm32-peripheral-config/
@@ -122,9 +122,10 @@ DSH 原生自动加载：
 # 1. 全局规范
 ls %USERPROFILE%\.claude\CLAUDE.md
 
-# 2. Skills（4 个真 skill，含 SKILL.md）
+# 2. Skills（6 个真 skill，含 SKILL.md）
 ls %USERPROFILE%\.claude\skills\
-#   应看到 stm32-build-flash-debug / stm32-code-review / stm32-debug-analyze / stm32-peripheral-config
+#   应看到 stm32-build-flash-debug / stm32-code-review / stm32-debug-analyze /
+#          stm32-peripheral-config / stm32-new-project / stm32-known-issues
 
 # 3. Commands（6 个斜杠命令）
 ls %USERPROFILE%\.claude\commands\

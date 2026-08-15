@@ -23,11 +23,11 @@ mcu:
   spl_support: {{MCU_SPL}}           # true=可建 SPL 骨架；false=建议 CubeMX/HAL 生成
 
 clock:
-  hse_mhz: 8
-  sysclk_mhz: 72
-  hclk_mhz: 72
-  pclk1_mhz: 36                  # F1xx; F3xx 常为 36
-  pclk2_mhz: 72
+  hse_mhz: 8                        # 板载晶振（按实际板卡确认！默认 8MHz 只是假设）
+  sysclk_mhz: {{MCU_SYSCLK}}        # 按型号主频推导（待按实际时钟树确认）
+  hclk_mhz: {{MCU_HCLK}}            # 通常 = SYSCLK
+  pclk1_mhz: {{MCU_PCLK1}}          # APB1 外设时钟（按家族分频）
+  pclk2_mhz: {{MCU_PCLK2}}          # APB2 外设时钟（按家族分频；无 APB2 的家族填与 PCLK1 相同或 N/A）
 
 # ==================== 外设表（留空，逐项填写） ====================
 peripherals:

@@ -1,4 +1,9 @@
 __pycache__/
 *.pyc
 install_summary.json
+install_summary_claude.json
+install_summary_dsh.json
 serial_log_*.txt
+# 安装现场备份（不入库；dsh_plugins/ 是正式插件源码，需入库）
+*.bak
+*.bak_*

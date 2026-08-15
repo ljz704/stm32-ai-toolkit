@@ -1,6 +1,6 @@
 ---
 name: stm32-peripheral-config
-description: 生成 STM32 标准外设库(SPL)外设初始化代码。当用户要求配置初始化 ADC TIM PWM USART UART SPI I2C DMA HRTIM NVIC CAN Modbus 等外设，或说 怎么配X 给我写个X初始化 时使用。先读 hardware.yaml 与 .dsh/memory/pin_usage.md 确认引脚，按编码规范生成 Doxygen 注释的初始化函数，输出调用顺序与 RCC 时钟使能说明。
+description: 生成 STM32 标准外设库(SPL)外设初始化代码。当用户要求配置初始化 ADC TIM PWM USART UART SPI I2C DMA HRTIM NVIC CAN Modbus 等外设，或说 怎么配X 给我写个X初始化 时使用。先读 hardware.yaml 与记忆文件 pin_usage.md（.dsh/memory 或 .claude/memory，取存在者）确认引脚，按编码规范生成 Doxygen 注释的初始化函数，输出调用顺序与 RCC 时钟使能说明。
 ---
 
 # STM32 外设配置生成（SPL 标准外设库）
@@ -10,7 +10,7 @@ description: 生成 STM32 标准外设库(SPL)外设初始化代码。当用户�
 ### Step 1：确认上下文
 1. 读取项目级 `CLAUDE.md`（DSH 亦支持 AGENTS.md），确认 MCU 型号（F1/F3/F0 的 SPL API 差异很大）
 2. 读取 `hardware.yaml` 确认外设与引脚分配
-3. 读取 `.dsh/memory/pin_usage.md`（旧工程可能是 `.claude/memory/pin_usage.md`，同样有效）检查引脚占用冲突
+3. 读取记忆文件 `pin_usage.md`（路径取存在者：DSH 轨 `.dsh/memory/`，Claude 轨 `.claude/memory/`）检查引脚占用冲突
 4. 如果引脚分配中已有该外设，直接基于已有引脚生成；如果引脚未分配，根据模板默认引脚推荐，并询问用户确认
 
 ### Step 2：收集外设参数
